@@ -1,0 +1,14 @@
+[package]
+name = "youeye-render"
+edition.workspace = true
+version.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+youeye-doc.workspace = true
+vello.workspace = true
+wgpu.workspace = true
+kurbo.workspace = true
+anyhow.workspace = true

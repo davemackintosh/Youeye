@@ -1,0 +1,19 @@
+/target
+/Cargo.lock.bak
+*.swp
+.DS_Store
+Thumbs.db
+
+# Per-user Claude Code state — keep local, don't share.
+.claude/settings.local.json
+
+# Editor
+.vscode/
+.idea/
+*.iml
+
+# Build artifacts
+*.app/
+*.dmg
+*.msi
+*.AppImage

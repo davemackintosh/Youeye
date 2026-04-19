@@ -1,0 +1,10 @@
+[package]
+name = "youeye-doc"
+edition.workspace = true
+version.workspace = true
+authors.workspace = true
+rust-version.workspace = true
+publish = false
+
+[dependencies]
+thiserror.workspace = true
