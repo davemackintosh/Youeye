@@ -11,6 +11,7 @@ use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, EventLoopProxy};
 use winit::window::{Window, WindowId};
 
+use crate::canvas::Canvas;
 use crate::menu::{self, MenuAction, MenuBar};
 
 /// Custom events pushed into the winit loop from sources outside winit itself.
@@ -55,6 +56,7 @@ struct AppState {
     egui_ctx: egui::Context,
     egui_state: egui_winit::State,
     egui_renderer: egui_wgpu::Renderer,
+    canvas: Canvas,
 }
 
 impl AppState {
@@ -65,7 +67,7 @@ impl AppState {
                 .with_inner_size(winit::dpi::LogicalSize::new(1280.0, 800.0)),
         )?);
 
-        let instance = wgpu::Instance::new(wgpu::InstanceDescriptor::new_without_display_handle());
+        let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
         let surface = instance.create_surface(window.clone())?;
 
         let adapter = pollster::block_on(instance.request_adapter(&wgpu::RequestAdapterOptions {
@@ -115,6 +117,8 @@ impl AppState {
         let egui_renderer =
             egui_wgpu::Renderer::new(&device, format, egui_wgpu::RendererOptions::default());
 
+        let canvas = Canvas::new(&device)?;
+
         Ok(Self {
             window,
             _instance: instance,
@@ -126,6 +130,7 @@ impl AppState {
             egui_ctx,
             egui_state,
             egui_renderer,
+            canvas,
         })
     }
 
@@ -144,22 +149,30 @@ impl AppState {
         menu: &mut dyn MenuBar,
         pending_actions: &mut Vec<MenuAction>,
     ) -> anyhow::Result<()> {
+        // Render the vello canvas into its offscreen texture first, using the
+        // camera + size the previous frame recorded. egui then samples that
+        // texture when the central panel draws below.
+        if let Err(e) = self.canvas.render(&self.device, &self.queue, &mut self.egui_renderer) {
+            warn!("canvas render: {e:?}");
+        }
+
         let raw_input = self.egui_state.take_egui_input(&*self.window);
+        let canvas = &mut self.canvas;
         let output = self.egui_ctx.clone().run(raw_input, |ctx| {
             menu.draw_egui(ctx, pending_actions);
-            ui.draw(ctx, pending_actions);
+            ui.draw(ctx, pending_actions, canvas);
         });
         self.egui_state
             .handle_platform_output(&*self.window, output.platform_output);
 
         let frame = match self.surface.get_current_texture() {
-            wgpu::CurrentSurfaceTexture::Success(f) | wgpu::CurrentSurfaceTexture::Suboptimal(f) => f,
-            wgpu::CurrentSurfaceTexture::Lost | wgpu::CurrentSurfaceTexture::Outdated => {
+            Ok(f) => f,
+            Err(wgpu::SurfaceError::Lost | wgpu::SurfaceError::Outdated) => {
                 self.surface.configure(&self.device, &self.surface_config);
                 return Ok(());
             }
-            other => {
-                warn!("surface acquire: {other:?}");
+            Err(e) => {
+                warn!("surface acquire: {e:?}");
                 return Ok(());
             }
         };
@@ -215,7 +228,6 @@ impl AppState {
                     depth_stencil_attachment: None,
                     timestamp_writes: None,
                     occlusion_query_set: None,
-                    multiview_mask: None,
                 })
                 .forget_lifetime();
             self.egui_renderer.render(&mut rpass, &paint_jobs, &screen);

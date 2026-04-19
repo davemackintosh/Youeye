@@ -1,4 +1,5 @@
 mod app;
+mod canvas;
 mod menu;
 mod menu_linux;
 #[cfg(any(target_os = "macos", target_os = "windows"))]

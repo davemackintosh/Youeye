@@ -19,14 +19,16 @@ tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 
 # UI + rendering. Versions are pinned to a known-compatible set;
-# egui-wgpu and vello must agree on the wgpu major version.
-egui = "0.34"
-egui-winit = "0.34"
-egui-wgpu = "0.34"
+# egui-wgpu and vello *must* agree on the wgpu major version. This combo
+# (egui 0.33 + vello 0.7) is the current alignment point at wgpu 27.
+# kurbo 0.11 also matches what vello 0.7 → peniko 0.5 resolves to.
+egui = "0.33"
+egui-winit = "0.33"
+egui-wgpu = "0.33"
 winit = "0.30"
-wgpu = "29"
-vello = "0.8"
-kurbo = "0.11"
+wgpu = "27"
+vello = "0.7"
+kurbo = "0.13"
 
 # Native menus (Mac / Windows only — muda pulls GTK on Linux, which we avoid).
 muda = "0.17"

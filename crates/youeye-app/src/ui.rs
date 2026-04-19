@@ -1,7 +1,8 @@
-//! egui layout: sidebars, status bar, central canvas placeholder.
+//! egui layout: sidebars, status bar, central canvas.
 
 use egui::{Color32, RichText};
 
+use crate::canvas::Canvas;
 use crate::menu::MenuAction;
 
 #[derive(Default)]
@@ -23,7 +24,12 @@ enum Tool {
 }
 
 impl UiState {
-    pub fn draw(&mut self, ctx: &egui::Context, _actions: &mut Vec<MenuAction>) {
+    pub fn draw(
+        &mut self,
+        ctx: &egui::Context,
+        _actions: &mut Vec<MenuAction>,
+        canvas: &mut Canvas,
+    ) {
         egui::TopBottomPanel::top("toolbar")
             .exact_height(36.0)
             .show(ctx, |ui| {
@@ -83,16 +89,10 @@ impl UiState {
             });
         });
 
-        egui::CentralPanel::default().show(ctx, |ui| {
-            let rect = ui.available_rect_before_wrap();
-            ui.painter().rect_filled(rect, 0.0, Color32::from_gray(24));
-            ui.centered_and_justified(|ui| {
-                ui.label(
-                    RichText::new("canvas — vello integration next")
-                        .color(Color32::from_gray(140))
-                        .size(14.0),
-                );
+        egui::CentralPanel::default()
+            .frame(egui::Frame::NONE)
+            .show(ctx, |ui| {
+                canvas.ui(ui);
             });
-        });
     }
 }
