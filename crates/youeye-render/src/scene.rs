@@ -134,17 +134,17 @@ fn render_node(
         }
         Node::Rect(r) => {
             let shape = KRect::new(r.x, r.y, r.x + r.width, r.y + r.height);
-            paint_shape(scene, &shape, node.base(), xform);
+            paint_shape(scene, &shape, node.base(), xform, doc);
         }
         Node::Ellipse(e) => {
             let shape = KEllipse::new((e.cx, e.cy), (e.rx, e.ry), 0.0);
-            paint_shape(scene, &shape, node.base(), xform);
+            paint_shape(scene, &shape, node.base(), xform, doc);
         }
         Node::Path(p) => {
-            paint_shape(scene, &p.data, node.base(), xform);
+            paint_shape(scene, &p.data, node.base(), xform, doc);
         }
         Node::Text(t) => {
-            crate::text::draw_text(scene, t, xform);
+            crate::text::draw_text(scene, t, xform, doc);
         }
         Node::Ruler(r) => {
             render_ruler(scene, r, xform, parent_bounds);
@@ -184,14 +184,20 @@ fn render_ruler(scene: &mut Scene, ruler: &Ruler, xform: Affine, bounds: KRect) 
     scene.stroke(&stroke, xform, &brush, None, &line);
 }
 
-fn paint_shape(scene: &mut Scene, shape: &impl Shape, base: &NodeBase, xform: Affine) {
+fn paint_shape(
+    scene: &mut Scene,
+    shape: &impl Shape,
+    base: &NodeBase,
+    xform: Affine,
+    doc: &Document,
+) {
     if let Some(fill) = &base.fill
-        && let Some(brush) = paint_to_brush(&fill.paint, fill.opacity)
+        && let Some(brush) = paint_to_brush(&fill.paint, fill.opacity, doc)
     {
         scene.fill(VelloFill::NonZero, xform, &brush, None, shape);
     }
     if let Some(stroke) = &base.stroke
-        && let Some(brush) = paint_to_brush(&stroke.paint, stroke.opacity)
+        && let Some(brush) = paint_to_brush(&stroke.paint, stroke.opacity, doc)
     {
         let width = stroke.width.unwrap_or(1.0);
         let kstroke = KStroke::new(width);
@@ -199,15 +205,123 @@ fn paint_shape(scene: &mut Scene, shape: &impl Shape, base: &NodeBase, xform: Af
     }
 }
 
-fn paint_to_brush(paint: &Paint, opacity: Option<f32>) -> Option<Brush> {
+pub(crate) fn paint_to_brush(paint: &Paint, opacity: Option<f32>, doc: &Document) -> Option<Brush> {
     match paint {
         Paint::None => None,
         Paint::Solid(c) => {
             let applied = apply_opacity(*c, opacity);
             Some(Brush::Solid(color_to_vello(applied)))
         }
-        Paint::Raw(_) => None,
+        Paint::Raw(s) => {
+            let resolved = resolve_color_reference(s, doc, 0)?;
+            let applied = apply_opacity(resolved, opacity);
+            Some(Brush::Solid(color_to_vello(applied)))
+        }
     }
+}
+
+const MAX_VAR_DEPTH: u32 = 8;
+
+/// Resolve a CSS-ish colour reference like `var(--token-brand)` or
+/// `var(--var-accent)` — following chained references up to
+/// [`MAX_VAR_DEPTH`] — and parse the terminal value as a colour. Returns
+/// `None` on any parse failure, missing token/variable, or cycle.
+fn resolve_color_reference(raw: &str, doc: &Document, depth: u32) -> Option<Color> {
+    if depth > MAX_VAR_DEPTH {
+        return None;
+    }
+    let t = raw.trim();
+    if let Some(name) = var_token_name(t) {
+        let value = doc.tokens.get(name)?;
+        return parse_color(value).or_else(|| resolve_color_reference(value, doc, depth + 1));
+    }
+    if let Some(name) = var_var_name(t) {
+        let value = doc.variables.get(name)?;
+        return parse_color(value).or_else(|| resolve_color_reference(value, doc, depth + 1));
+    }
+    parse_color(t)
+}
+
+fn var_token_name(s: &str) -> Option<&str> {
+    s.trim()
+        .strip_prefix("var(--token-")
+        .and_then(|r| r.strip_suffix(')'))
+}
+
+fn var_var_name(s: &str) -> Option<&str> {
+    s.trim()
+        .strip_prefix("var(--var-")
+        .and_then(|r| r.strip_suffix(')'))
+}
+
+/// Parse a colour literal: `#rgb`, `#rrggbb`, `#rrggbbaa`, `rgb(r, g, b)`,
+/// `rgba(r, g, b, a)`. `r/g/b` in 0..=255, `a` in 0..=1.
+fn parse_color(s: &str) -> Option<Color> {
+    let t = s.trim();
+    if let Some(c) = parse_hex(t) {
+        return Some(c);
+    }
+    if let Some(c) = parse_rgb_fn(t) {
+        return Some(c);
+    }
+    None
+}
+
+fn parse_hex(s: &str) -> Option<Color> {
+    let hex = s.strip_prefix('#')?;
+    let (r, g, b, a) = match hex.len() {
+        3 => {
+            let r = u8::from_str_radix(&hex[0..1].repeat(2), 16).ok()?;
+            let g = u8::from_str_radix(&hex[1..2].repeat(2), 16).ok()?;
+            let b = u8::from_str_radix(&hex[2..3].repeat(2), 16).ok()?;
+            (r, g, b, 255u8)
+        }
+        6 => {
+            let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
+            let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
+            let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
+            (r, g, b, 255u8)
+        }
+        8 => {
+            let r = u8::from_str_radix(&hex[0..2], 16).ok()?;
+            let g = u8::from_str_radix(&hex[2..4], 16).ok()?;
+            let b = u8::from_str_radix(&hex[4..6], 16).ok()?;
+            let a = u8::from_str_radix(&hex[6..8], 16).ok()?;
+            (r, g, b, a)
+        }
+        _ => return None,
+    };
+    Some(Color {
+        r: r as f32 / 255.0,
+        g: g as f32 / 255.0,
+        b: b as f32 / 255.0,
+        a: a as f32 / 255.0,
+    })
+}
+
+fn parse_rgb_fn(s: &str) -> Option<Color> {
+    let (has_alpha, rest) = if let Some(r) = s.strip_prefix("rgb(") {
+        (false, r)
+    } else if let Some(r) = s.strip_prefix("rgba(") {
+        (true, r)
+    } else {
+        return None;
+    };
+    let rest = rest.strip_suffix(')')?;
+    let parts: Vec<&str> = rest.split(',').map(str::trim).collect();
+    let expected = if has_alpha { 4 } else { 3 };
+    if parts.len() != expected {
+        return None;
+    }
+    let r = parts[0].parse::<f32>().ok()? / 255.0;
+    let g = parts[1].parse::<f32>().ok()? / 255.0;
+    let b = parts[2].parse::<f32>().ok()? / 255.0;
+    let a = if has_alpha {
+        parts[3].parse::<f32>().ok()?
+    } else {
+        1.0
+    };
+    Some(Color { r, g, b, a })
 }
 
 fn apply_opacity(c: Color, opacity: Option<f32>) -> Color {

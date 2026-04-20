@@ -301,6 +301,11 @@ impl ApplicationHandler<UserEvent> for App {
                 event_loop.exit();
             }
         }
+        // Start with an empty document so the user has something to edit
+        // immediately — no dead-end on first launch.
+        if self.doc_state.is_none() {
+            self.doc_state = Some(DocumentState::new(Document::default(), None));
+        }
     }
 
     fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {

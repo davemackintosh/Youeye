@@ -20,19 +20,19 @@ use vello::Scene;
 use vello::peniko::color::{AlphaColor, Srgb};
 use vello::peniko::{Brush, Fill as VelloFill};
 
-use youeye_doc::{Color, Paint, Text};
+use youeye_doc::{Document, Text};
 
 thread_local! {
     static FONT_CTX: RefCell<FontContext> = RefCell::new(FontContext::new());
     static LAYOUT_CTX: RefCell<LayoutContext<()>> = RefCell::new(LayoutContext::new());
 }
 
-pub fn draw_text(scene: &mut Scene, text: &Text, xform: Affine) {
+pub fn draw_text(scene: &mut Scene, text: &Text, xform: Affine, doc: &Document) {
     if text.content.is_empty() {
         return;
     }
     let font_size = text.font_size.unwrap_or(16.0) as f32;
-    let brush = brush_for_text(text);
+    let brush = brush_for_text(text, doc);
 
     FONT_CTX.with(|fcx| {
         LAYOUT_CTX.with(|lcx| {
@@ -88,30 +88,30 @@ pub fn draw_text(scene: &mut Scene, text: &Text, xform: Affine) {
     });
 }
 
-fn brush_for_text(text: &Text) -> Brush {
-    let paint = text
-        .base
-        .fill
-        .as_ref()
-        .map(|f| &f.paint)
-        .cloned()
-        .unwrap_or(Paint::Solid(Color {
-            r: 0.0,
-            g: 0.0,
-            b: 0.0,
-            a: 1.0,
-        }));
-    let opacity = text.base.fill.as_ref().and_then(|f| f.opacity);
-    match paint {
-        Paint::None => Brush::Solid(AlphaColor::<Srgb>::from_rgba8(0, 0, 0, 0)),
-        Paint::Solid(c) => {
-            let a = c.a * opacity.unwrap_or(1.0).clamp(0.0, 1.0);
-            let r = (c.r.clamp(0.0, 1.0) * 255.0).round() as u8;
-            let g = (c.g.clamp(0.0, 1.0) * 255.0).round() as u8;
-            let b = (c.b.clamp(0.0, 1.0) * 255.0).round() as u8;
-            let a = (a.clamp(0.0, 1.0) * 255.0).round() as u8;
-            Brush::Solid(AlphaColor::<Srgb>::from_rgba8(r, g, b, a))
-        }
-        Paint::Raw(_) => Brush::Solid(AlphaColor::<Srgb>::from_rgba8(0, 0, 0, 0xff)),
+fn brush_for_text(text: &Text, doc: &Document) -> Brush {
+    let fill = text.base.fill.as_ref();
+    let opacity = fill.and_then(|f| f.opacity);
+    let paint = fill.map(|f| &f.paint);
+
+    // Resolve via the shared paint-to-brush path so tokens / variables work
+    // the same way here as for shapes. Fall back to solid black so
+    // unresolved text stays visible (an invisible glyph run would look
+    // like a bug).
+    if let Some(p) = paint
+        && let Some(brush) = crate::scene::paint_to_brush(p, opacity, doc)
+    {
+        return brush;
     }
+    let default_rgba = (
+        0,
+        0,
+        0,
+        (opacity.unwrap_or(1.0).clamp(0.0, 1.0) * 255.0).round() as u8,
+    );
+    Brush::Solid(AlphaColor::<Srgb>::from_rgba8(
+        default_rgba.0,
+        default_rgba.1,
+        default_rgba.2,
+        default_rgba.3,
+    ))
 }

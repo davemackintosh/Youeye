@@ -219,6 +219,11 @@ impl Canvas {
             self.space_held = i.key_down(egui::Key::Space);
         });
 
+        if response.hovered() {
+            let cursor = cursor_for_tool(tool, self.space_held);
+            ui.ctx().set_cursor_icon(cursor);
+        }
+
         let (scroll_delta, modifiers, pointer) =
             ui.input(|i| (i.smooth_scroll_delta, i.modifiers, i.pointer.hover_pos()));
         let shift_held = modifiers.shift;
@@ -547,7 +552,7 @@ impl Canvas {
         self.scene
             .stroke(&outline_stroke, xform, &brush, None, &outline);
 
-        let handle_size = 8.0 / scale;
+        let handle_size = 10.0 / scale;
         for (cx, cy) in handle_centers(b) {
             let h = KRect::new(
                 cx - handle_size / 2.0,
@@ -949,7 +954,9 @@ fn handle_centers(b: ShapeBounds) -> [(f64, f64); 8] {
 }
 
 fn hit_handle(b: ShapeBounds, world: Vec2, camera_scale: f64) -> Option<Handle> {
-    let tolerance = 10.0 / camera_scale.max(0.001);
+    // Hit tolerance is in world units; at camera_scale=1 this is logical
+    // pixels. 16 is generously large for fingertip-level precision.
+    let tolerance = 16.0 / camera_scale.max(0.001);
     let centers = handle_centers(b);
     let handles = [
         Handle::Nw,
@@ -1071,4 +1078,18 @@ fn resize_bounds(
 
 fn srgb(r: u8, g: u8, b: u8, a: u8) -> Color {
     AlphaColor::<Srgb>::from_rgba8(r, g, b, a)
+}
+
+fn cursor_for_tool(tool: Tool, space_held: bool) -> egui::CursorIcon {
+    if space_held {
+        return egui::CursorIcon::Grab;
+    }
+    match tool {
+        Tool::Select => egui::CursorIcon::Default,
+        Tool::Rect | Tool::Ellipse | Tool::Frame | Tool::Line | Tool::Pen => {
+            egui::CursorIcon::Crosshair
+        }
+        Tool::Text => egui::CursorIcon::Text,
+        Tool::Hand => egui::CursorIcon::Grab,
+    }
 }
