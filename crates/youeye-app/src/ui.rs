@@ -353,6 +353,7 @@ fn draw_dict_editor(
                 ui.add(egui::TextEdit::singleline(&mut new_name).desired_width(100.0));
                 ui.label(":");
                 ui.add(egui::TextEdit::singleline(&mut new_value).desired_width(120.0));
+                draw_value_hint(ui, &new_value);
                 if ui.small_button("×").on_hover_text("Delete").clicked() {
                     delete = true;
                 }
@@ -697,6 +698,128 @@ fn node_label(node: &Node) -> String {
 
 fn supports_paint(node: &Node) -> bool {
     matches!(node, Node::Rect(_) | Node::Ellipse(_) | Node::Path(_))
+}
+
+/// Next to a token / variable row, render a small visual hint about what
+/// kind of value it is: a colour swatch for hex / rgb values, a unit tag
+/// for lengths (`12px`, `2em`), an expression tag for `calc(...)` /
+/// `var(...)`, nothing for anything else.
+fn draw_value_hint(ui: &mut egui::Ui, value: &str) {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return;
+    }
+    if let Some(swatch) = parse_hint_color(trimmed) {
+        let (rect, _) = ui.allocate_exact_size(egui::vec2(14.0, 14.0), egui::Sense::hover());
+        ui.painter().rect_filled(rect, 2.0, swatch);
+        ui.painter().rect_stroke(
+            rect,
+            2.0,
+            egui::Stroke::new(1.0, Color32::BLACK),
+            egui::StrokeKind::Inside,
+        );
+        return;
+    }
+    if let Some(unit) = parse_length_unit(trimmed) {
+        ui.label(RichText::new(unit).small().color(Color32::GRAY));
+        return;
+    }
+    if trimmed.starts_with("var(") {
+        ui.label(RichText::new("var").small().color(Color32::GRAY));
+        return;
+    }
+    if trimmed.starts_with("calc(") {
+        ui.label(RichText::new("calc").small().color(Color32::GRAY));
+    }
+}
+
+fn parse_hint_color(s: &str) -> Option<Color32> {
+    fn hex_pair(h: &str) -> Option<u8> {
+        u8::from_str_radix(h, 16).ok()
+    }
+    if let Some(hex) = s.strip_prefix('#') {
+        let (r, g, b, a) = match hex.len() {
+            3 => (
+                hex_pair(&hex[0..1].repeat(2))?,
+                hex_pair(&hex[1..2].repeat(2))?,
+                hex_pair(&hex[2..3].repeat(2))?,
+                255u8,
+            ),
+            6 => (
+                hex_pair(&hex[0..2])?,
+                hex_pair(&hex[2..4])?,
+                hex_pair(&hex[4..6])?,
+                255u8,
+            ),
+            8 => (
+                hex_pair(&hex[0..2])?,
+                hex_pair(&hex[2..4])?,
+                hex_pair(&hex[4..6])?,
+                hex_pair(&hex[6..8])?,
+            ),
+            _ => return None,
+        };
+        return Some(Color32::from_rgba_unmultiplied(r, g, b, a));
+    }
+    if let Some(rest) = s.strip_prefix("rgb(").and_then(|r| r.strip_suffix(')')) {
+        let parts: Vec<&str> = rest.split(',').map(str::trim).collect();
+        if parts.len() == 3
+            && let (Ok(r), Ok(g), Ok(b)) = (
+                parts[0].parse::<u8>(),
+                parts[1].parse::<u8>(),
+                parts[2].parse::<u8>(),
+            )
+        {
+            return Some(Color32::from_rgb(r, g, b));
+        }
+    }
+    if let Some(rest) = s.strip_prefix("rgba(").and_then(|r| r.strip_suffix(')')) {
+        let parts: Vec<&str> = rest.split(',').map(str::trim).collect();
+        if parts.len() == 4
+            && let (Ok(r), Ok(g), Ok(b), Ok(a)) = (
+                parts[0].parse::<u8>(),
+                parts[1].parse::<u8>(),
+                parts[2].parse::<u8>(),
+                parts[3].parse::<f32>(),
+            )
+        {
+            let a8 = (a.clamp(0.0, 1.0) * 255.0).round() as u8;
+            return Some(Color32::from_rgba_unmultiplied(r, g, b, a8));
+        }
+    }
+    None
+}
+
+fn parse_length_unit(s: &str) -> Option<&'static str> {
+    // First char must be numeric / sign / dot.
+    let first = s.chars().next()?;
+    if !(first.is_ascii_digit() || first == '-' || first == '+' || first == '.') {
+        return None;
+    }
+    // Find where the number ends.
+    let end = s
+        .find(|c: char| {
+            !(c.is_ascii_digit() || c == '.' || c == '-' || c == '+' || c == 'e' || c == 'E')
+        })
+        .unwrap_or(s.len());
+    let number = &s[..end];
+    if number.parse::<f64>().is_err() {
+        return None;
+    }
+    let unit = s[end..].trim();
+    match unit {
+        "" => Some("num"),
+        "px" => Some("px"),
+        "em" => Some("em"),
+        "rem" => Some("rem"),
+        "%" => Some("%"),
+        "pt" => Some("pt"),
+        "vh" => Some("vh"),
+        "vw" => Some("vw"),
+        "s" => Some("s"),
+        "ms" => Some("ms"),
+        _ => None,
+    }
 }
 
 /// Delete every selected node. Sort by path length descending then

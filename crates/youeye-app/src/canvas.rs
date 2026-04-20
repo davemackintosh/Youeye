@@ -62,6 +62,8 @@ enum Drag {
         start_world: Vec2,
         start_bounds: ShapeBounds,
     },
+    /// Rubber-band selection — dragging on empty canvas with Select.
+    Marquee { start: Vec2, current: Vec2 },
 }
 
 #[derive(Copy, Clone)]
@@ -316,6 +318,9 @@ impl Canvas {
                         *current = world;
                     }
                 }
+                Some(Drag::Marquee { current, .. }) => {
+                    *current = world;
+                }
                 Some(Drag::Moving) => {
                     if let Some(doc) = doc.as_deref_mut() {
                         let delta = Vec2::new(
@@ -348,19 +353,39 @@ impl Canvas {
         // End the drag.
         if response.drag_stopped()
             && let Some(drag) = self.drag.take()
-            && let Drag::Creating {
-                kind,
-                start,
-                current,
-            } = drag
-            && let Some(doc) = doc.as_deref_mut()
         {
-            let bounds = normalize_rect(start, current);
-            if bounds.w > 0.5 && bounds.h > 0.5 {
-                let node = create_shape(kind, bounds);
-                doc.children.push(node);
-                *selection = vec![vec![doc.children.len() - 1]];
-                mutated = true;
+            match drag {
+                Drag::Creating {
+                    kind,
+                    start,
+                    current,
+                } => {
+                    if let Some(doc) = doc.as_deref_mut() {
+                        let bounds = normalize_rect(start, current);
+                        if bounds.w > 0.5 && bounds.h > 0.5 {
+                            let node = create_shape(kind, bounds);
+                            doc.children.push(node);
+                            *selection = vec![vec![doc.children.len() - 1]];
+                            mutated = true;
+                        }
+                    }
+                }
+                Drag::Marquee { start, current } => {
+                    if let Some(doc) = doc.as_deref() {
+                        let rect = normalize_rect(start, current);
+                        let hits = marquee_hits(doc, rect);
+                        if shift_held {
+                            for hit in hits {
+                                if !selection.iter().any(|s| *s == hit) {
+                                    selection.push(hit);
+                                }
+                            }
+                        } else {
+                            *selection = hits;
+                        }
+                    }
+                }
+                Drag::Moving | Drag::Resizing { .. } => {}
             }
         }
 
@@ -464,12 +489,10 @@ impl Canvas {
                         }
                         Some(Drag::Moving)
                     }
-                    None => {
-                        if !shift_held {
-                            selection.clear();
-                        }
-                        None
-                    }
+                    None => Some(Drag::Marquee {
+                        start: world,
+                        current: world,
+                    }),
                 }
             }
             _ => None,
@@ -534,14 +557,37 @@ impl Canvas {
             }
         }
 
-        if let Some(Drag::Creating {
-            kind,
-            start,
-            current,
-        }) = &self.drag
-        {
-            self.draw_create_preview(*kind, normalize_rect(*start, *current), xform);
+        match &self.drag {
+            Some(Drag::Creating {
+                kind,
+                start,
+                current,
+            }) => {
+                self.draw_create_preview(*kind, normalize_rect(*start, *current), xform);
+            }
+            Some(Drag::Marquee { start, current }) => {
+                self.draw_marquee_preview(normalize_rect(*start, *current), xform);
+            }
+            _ => {}
         }
+    }
+
+    fn draw_marquee_preview(&mut self, b: ShapeBounds, xform: Affine) {
+        let scale = self.camera.scale.max(0.001);
+        let outline = KRect::new(b.x, b.y, b.x + b.w, b.y + b.h);
+        // Translucent fill + solid thin outline, same accent as selection.
+        let fill_brush = Brush::Solid(AlphaColor::<Srgb>::from_rgba8(0x57, 0x9f, 0xff, 0x22));
+        self.scene.fill(
+            vello::peniko::Fill::NonZero,
+            xform,
+            &fill_brush,
+            None,
+            &outline,
+        );
+        let stroke = Stroke::new(1.0 / scale);
+        let outline_brush = Brush::Solid(srgb(0x57, 0x9f, 0xff, 0xff));
+        self.scene
+            .stroke(&stroke, xform, &outline_brush, None, &outline);
     }
 
     fn draw_selection_decor(&mut self, b: ShapeBounds, xform: Affine) {
@@ -1078,6 +1124,49 @@ fn resize_bounds(
 
 fn srgb(r: u8, g: u8, b: u8, a: u8) -> Color {
     AlphaColor::<Srgb>::from_rgba8(r, g, b, a)
+}
+
+/// All node paths whose world bounds intersect `rect`. Groups are skipped
+/// as selectable targets but their children are still tested. Frames are
+/// selectable *and* their children are tested in frame-local coords.
+fn marquee_hits(doc: &Document, rect: ShapeBounds) -> Vec<Vec<usize>> {
+    fn walk(
+        children: &[Node],
+        origin: Vec2,
+        path: &mut Vec<usize>,
+        rect: ShapeBounds,
+        out: &mut Vec<Vec<usize>>,
+    ) {
+        for (i, child) in children.iter().enumerate() {
+            path.push(i);
+            let bounds = local_bounds(child, origin);
+            let is_container_only = matches!(child, Node::Group(_));
+            if !is_container_only
+                && bounds.w > 0.0
+                && bounds.h > 0.0
+                && bounds_intersect(bounds, rect)
+            {
+                out.push(path.clone());
+            }
+            match child {
+                Node::Frame(f) => {
+                    walk(&f.children, origin + Vec2::new(f.x, f.y), path, rect, out);
+                }
+                Node::Group(g) => {
+                    walk(&g.children, origin, path, rect, out);
+                }
+                _ => {}
+            }
+            path.pop();
+        }
+    }
+    let mut out = Vec::new();
+    walk(&doc.children, Vec2::ZERO, &mut Vec::new(), rect, &mut out);
+    out
+}
+
+fn bounds_intersect(a: ShapeBounds, b: ShapeBounds) -> bool {
+    !(a.x + a.w < b.x || b.x + b.w < a.x || a.y + a.h < b.y || b.y + b.h < a.y)
 }
 
 fn cursor_for_tool(tool: Tool, space_held: bool) -> egui::CursorIcon {
