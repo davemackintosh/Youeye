@@ -7,13 +7,14 @@ Last updated: **2026-04-20**.
 ## Current phase
 
 **Phase 1 — Foundation** ✅ complete.
-**Phase 2 — Document model + SVG round-trip** 🚧 in progress (slices A+B landed, slice C next).
+**Phase 2 — Document model + SVG round-trip** ✅ complete (slices A, B, C).
 
 - 1a — Workspace scaffold, egui + winit + wgpu window with chrome (toolbar, layers, inspector, status bar, menu bar).
 - 1b — Vello canvas with pan/zoom, rendered into an offscreen `Rgba8Unorm` texture registered as an egui native texture.
 - 1c — wgpu device limits: request `adapter.limits()` (not `downlevel_defaults`) so Retina-class surfaces and vello's compute shader (5 storage buffers) are supported.
 - 2A — `youeye-doc`: `Node` enum (Group/Frame/Rect/Ellipse/Path/Text) with `NodeBase` carrying id, `kurbo::Affine`, fill/stroke, `youeye_attrs`, `extra_attrs`. `Document` with `ViewBox`, tokens, variables, `raw_style`. 8 unit tests.
 - 2B — `youeye-io`: SVG parser + serializer (`quick-xml` 0.39). **Canonical** round-trip — first save normalises (sorted attrs, 2-space indent, `\n`, CDATA-wrapped style, self-closing empties); every subsequent load+save is byte-identical. `<style>` content round-trips verbatim via `Document.raw_style`; tokens/variables are a read-only view extracted from `:root` declarations. Unknown attrs preserved in `extra_attrs`. 13 unit tests.
+- 2C — Wire-up. `youeye-render::build(&mut Scene, &Document, Affine)` walks the doc tree and emits vello draw commands (solid fills/strokes on rect/ellipse/path; `Paint::Raw` is a no-op for now). `Canvas::render` now takes `Option<&Document>`; app holds a `DocumentState { doc, path, dirty }`. File > Open / Save / Save As / New wired via `rfd` file dialogs (single `.svg` file per "project" for now — full folder layout deferred). Layers panel in the left sidebar shows the node tree with click-to-select (path-based selection model); Inspector panel now lists tokens/variables when a doc is open. 3 render-crate tests.
 
 ## How to run
 
@@ -69,10 +70,10 @@ Sliced A/B/C for tractable commits. **Round-trip policy: canonical**, not strict
 3. **`youeye-io`: SVG parser.** ✅ `quick-xml` 0.39-based. Preserves unknown attrs into `extra_attrs`. Routes `youeye:*` into `youeye_attrs`. Captures `<style>` text verbatim into `Document.raw_style`; extracts `--token-*`/`--var-*` out of any `:root` blocks for the inspector view. Foreign SVG via `usvg` is a later entry point, not wired yet.
 4. **`youeye-io`: SVG serializer.** ✅ `\n`, 2-space indent, sorted attrs, self-closing empties, `<?xml ...?>` declaration, CDATA-wrapped `<style>`. Default `xmlns`/`xmlns:youeye` auto-added when missing. 13 round-trip/unit tests.
 
-**Slice C (next)** — wire-up.
-5. **`youeye-app`: project I/O.** Folder-as-project (`project.yeye.json` + `screens/*.svg` + `components.svg` + `assets/`). Hook into File > New / Open / Save menu actions.
-6. **`youeye-app`: layers panel.** Bind to the current screen's node tree; selection, rename, reorder, visibility toggle, lock.
-7. **`youeye-render`: scene builder.** Walk the doc tree, emit a `vello::Scene`. Replace the hardcoded test content in `canvas.rs::build_scene`.
+**Slice C ✅** — wire-up.
+5. **`youeye-app`: project I/O.** ✅ *Scoped down*: single `.svg` file per "project" via `rfd` dialogs (File > New / Open / Save / Save As). Full folder-as-project layout (`project.yeye.json` + `screens/*.svg` + `components.svg` + `assets/`) deferred — pick up when we need multi-screen or component sharing.
+6. **`youeye-app`: layers panel.** ✅ Tree view of current document bound to `doc.children`. Selection as `Vec<usize>` path. Rename / reorder / visibility toggle / lock are Phase 6 concerns.
+7. **`youeye-render`: scene builder.** ✅ `youeye_render::build(&mut Scene, &Document, Affine)` — solid fills/strokes on rect/ellipse/path; `Paint::Raw` silently skipped. Canvas keeps grid + crosshair as background decoration.
 
 **Known slice-B scope deferrals (pick up before slice C or as needed):**
 - `Frame` node type parses as `Node::Group` for now. Serializer emits `Frame` as `<g>` plus `youeye:frame="true"` + `youeye:{x,y,width,height}` — a placeholder until Phase 3's auto-layout code decides the canonical encoding (candidates: nested `<svg>` vs `<g>` + namespaced attrs).

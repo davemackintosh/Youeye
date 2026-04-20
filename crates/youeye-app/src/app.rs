@@ -11,6 +11,8 @@ use winit::event::WindowEvent;
 use winit::event_loop::{ActiveEventLoop, EventLoopProxy};
 use winit::window::{Window, WindowId};
 
+use youeye_doc::Document;
+
 use crate::canvas::Canvas;
 use crate::menu::{self, MenuAction, MenuBar};
 
@@ -30,6 +32,7 @@ pub struct App {
     menu: Box<dyn MenuBar>,
     state: Option<AppState>,
     ui: crate::ui::UiState,
+    doc_state: Option<DocumentState>,
 }
 
 impl App {
@@ -39,6 +42,24 @@ impl App {
             menu: menu::create(),
             state: None,
             ui: crate::ui::UiState::default(),
+            doc_state: None,
+        }
+    }
+}
+
+/// An open document plus editor-session metadata.
+pub struct DocumentState {
+    pub doc: Document,
+    pub path: Option<std::path::PathBuf>,
+    pub dirty: bool,
+}
+
+impl DocumentState {
+    pub fn new(doc: Document, path: Option<std::path::PathBuf>) -> Self {
+        Self {
+            doc,
+            path,
+            dirty: false,
         }
     }
 }
@@ -153,13 +174,14 @@ impl AppState {
         ui: &mut crate::ui::UiState,
         menu: &mut dyn MenuBar,
         pending_actions: &mut Vec<MenuAction>,
+        doc: Option<&Document>,
     ) -> anyhow::Result<()> {
         // Render the vello canvas into its offscreen texture first, using the
         // camera + size the previous frame recorded. egui then samples that
         // texture when the central panel draws below.
         if let Err(e) = self
             .canvas
-            .render(&self.device, &self.queue, &mut self.egui_renderer)
+            .render(&self.device, &self.queue, &mut self.egui_renderer, doc)
         {
             warn!("canvas render: {e:?}");
         }
@@ -168,7 +190,7 @@ impl AppState {
         let canvas = &mut self.canvas;
         let output = self.egui_ctx.clone().run(raw_input, |ctx| {
             menu.draw_egui(ctx, pending_actions);
-            ui.draw(ctx, pending_actions, canvas);
+            ui.draw(ctx, pending_actions, canvas, doc);
         });
         self.egui_state
             .handle_platform_output(&*self.window, output.platform_output);
@@ -297,10 +319,11 @@ impl ApplicationHandler<UserEvent> for App {
             }
             WindowEvent::RedrawRequested => {
                 let mut actions = Vec::new();
-                if let Err(e) = state.render(&mut self.ui, &mut *self.menu, &mut actions) {
+                let doc = self.doc_state.as_ref().map(|s| &s.doc);
+                if let Err(e) = state.render(&mut self.ui, &mut *self.menu, &mut actions, doc) {
                     warn!("render error: {e:?}");
                 }
-                drain_actions(&actions, event_loop);
+                self.drain_actions(&actions, event_loop);
             }
             _ => {}
         }
@@ -311,9 +334,9 @@ impl ApplicationHandler<UserEvent> for App {
         allow(unused_variables, unreachable_code)
     )]
     fn user_event(&mut self, event_loop: &ActiveEventLoop, event: UserEvent) {
-        let Some(state) = self.state.as_mut() else {
+        if self.state.is_none() {
             return;
-        };
+        }
         #[cfg_attr(
             not(any(target_os = "macos", target_os = "windows")),
             allow(unused_mut)
@@ -325,8 +348,10 @@ impl ApplicationHandler<UserEvent> for App {
                 self.menu.handle_native_event(&ev, &mut actions);
             }
         }
-        drain_actions(&actions, event_loop);
-        state.window.request_redraw();
+        self.drain_actions(&actions, event_loop);
+        if let Some(state) = self.state.as_mut() {
+            state.window.request_redraw();
+        }
     }
 
     fn about_to_wait(&mut self, _event_loop: &ActiveEventLoop) {
@@ -334,11 +359,85 @@ impl ApplicationHandler<UserEvent> for App {
     }
 }
 
-fn drain_actions(actions: &[MenuAction], event_loop: &ActiveEventLoop) {
-    for action in actions {
-        debug!(?action, "menu action");
-        if matches!(action, MenuAction::Quit) {
-            event_loop.exit();
+impl App {
+    fn drain_actions(&mut self, actions: &[MenuAction], event_loop: &ActiveEventLoop) {
+        for action in actions {
+            debug!(?action, "menu action");
+            match action {
+                MenuAction::Quit => event_loop.exit(),
+                MenuAction::OpenProject => self.open_file_dialog(),
+                MenuAction::Save => self.save(),
+                MenuAction::SaveAs => self.save_as_dialog(),
+                MenuAction::NewProject => {
+                    self.doc_state = Some(DocumentState::new(Document::default(), None));
+                    self.request_redraw();
+                }
+                _ => {}
+            }
+        }
+    }
+
+    fn request_redraw(&self) {
+        if let Some(state) = self.state.as_ref() {
+            state.window.request_redraw();
+        }
+    }
+
+    fn open_file_dialog(&mut self) {
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("SVG", &["svg"])
+            .pick_file()
+        else {
+            return;
+        };
+        match std::fs::read_to_string(&path) {
+            Ok(text) => match youeye_io::from_svg(&text) {
+                Ok(doc) => {
+                    info!(?path, "opened document");
+                    self.doc_state = Some(DocumentState::new(doc, Some(path)));
+                    self.request_redraw();
+                }
+                Err(e) => warn!("parse {path:?}: {e:?}"),
+            },
+            Err(e) => warn!("read {path:?}: {e:?}"),
+        }
+    }
+
+    fn save(&mut self) {
+        let Some(ds) = self.doc_state.as_mut() else {
+            return;
+        };
+        let Some(path) = ds.path.clone() else {
+            return self.save_as_dialog();
+        };
+        let text = youeye_io::to_svg(&ds.doc);
+        match std::fs::write(&path, text) {
+            Ok(()) => {
+                ds.dirty = false;
+                info!(?path, "saved document");
+            }
+            Err(e) => warn!("write {path:?}: {e:?}"),
+        }
+    }
+
+    fn save_as_dialog(&mut self) {
+        let Some(ds) = self.doc_state.as_mut() else {
+            return;
+        };
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("SVG", &["svg"])
+            .save_file()
+        else {
+            return;
+        };
+        let text = youeye_io::to_svg(&ds.doc);
+        match std::fs::write(&path, text) {
+            Ok(()) => {
+                ds.path = Some(path.clone());
+                ds.dirty = false;
+                info!(?path, "saved document");
+            }
+            Err(e) => warn!("write {path:?}: {e:?}"),
         }
     }
 }

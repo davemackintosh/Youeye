@@ -7,10 +7,11 @@
 //! re-entrancy between vello and egui.
 
 use anyhow::Result;
-use kurbo::{Affine, Circle, Line, Point, Rect, Stroke, Vec2};
+use kurbo::{Affine, Line, Point, Stroke, Vec2};
 use vello::peniko::color::{AlphaColor, Srgb};
-use vello::peniko::{Brush, Color, Fill};
+use vello::peniko::{Brush, Color};
 use vello::{AaConfig, RenderParams, Renderer, RendererOptions, Scene};
+use youeye_doc::Document;
 
 use crate::modifiers::{Modifier, held};
 
@@ -66,12 +67,14 @@ impl Canvas {
     }
 
     /// Render the scene to the offscreen texture using the latest camera +
-    /// size. Called before `egui_ctx.run`.
+    /// size. Called before `egui_ctx.run`. If `doc` is `Some`, its node tree
+    /// is composed on top of the background grid.
     pub fn render(
         &mut self,
         device: &wgpu::Device,
         queue: &wgpu::Queue,
         egui_renderer: &mut egui_wgpu::Renderer,
+        doc: Option<&Document>,
     ) -> Result<()> {
         let [w, h] = self.pending_size_px;
         if w == 0 || h == 0 {
@@ -111,7 +114,7 @@ impl Canvas {
             });
         }
 
-        self.build_scene();
+        self.build_scene(doc);
 
         let target = self.target.as_ref().expect("target present");
         self.renderer
@@ -188,13 +191,12 @@ impl Canvas {
         self.camera.scale = 1.0;
     }
 
-    /// Placeholder content so pan/zoom is visibly working. Real scene building
-    /// lands in phase 2 when the document model is in place.
-    fn build_scene(&mut self) {
+    /// Build the frame's scene: the background grid + crosshair, then the
+    /// document tree on top when a doc is loaded.
+    fn build_scene(&mut self, doc: Option<&Document>) {
         self.scene.reset();
         let xform = Affine::translate(self.camera.translate) * Affine::scale(self.camera.scale);
 
-        // Grid so zoom is visible.
         let grid = Stroke::new(1.0 / self.camera.scale.max(0.001));
         let grid_brush = Brush::Solid(srgb(0x28, 0x28, 0x2e, 0xff));
         for i in -20..=20 {
@@ -206,7 +208,6 @@ impl Canvas {
             self.scene.stroke(&grid, xform, &grid_brush, None, &line);
         }
 
-        // Origin crosshair.
         let axis = Stroke::new(1.5 / self.camera.scale.max(0.001));
         self.scene.stroke(
             &axis,
@@ -223,21 +224,9 @@ impl Canvas {
             &Line::new(Point::new(0.0, -1000.0), Point::new(0.0, 1000.0)),
         );
 
-        // Test content.
-        self.scene.fill(
-            Fill::NonZero,
-            xform,
-            &Brush::Solid(srgb(0x00, 0x52, 0xcc, 0xff)),
-            None,
-            &Rect::new(0.0, 0.0, 200.0, 120.0),
-        );
-        self.scene.fill(
-            Fill::NonZero,
-            xform,
-            &Brush::Solid(srgb(0xff, 0x57, 0x22, 0xff)),
-            None,
-            &Circle::new(Point::new(320.0, 220.0), 70.0),
-        );
+        if let Some(doc) = doc {
+            youeye_render::build(&mut self.scene, doc, xform);
+        }
     }
 }
 
