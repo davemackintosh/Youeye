@@ -23,6 +23,12 @@ pub struct UiState {
     /// When set, the next frame asks egui to focus the Text content field.
     /// Used by the canvas to hand over focus on a double-click.
     pending_text_focus: bool,
+    /// If set, the layer at this path is being renamed inline — its
+    /// `selectable_label` swaps for a `TextEdit` until commit or cancel.
+    renaming: Option<Vec<usize>>,
+    /// Scratch buffer for the in-flight rename. Populated when `renaming`
+    /// transitions from `None` to `Some`.
+    rename_buffer: String,
 }
 
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
@@ -115,6 +121,7 @@ impl UiState {
             });
 
         let mut pending_adds: Vec<Node> = Vec::new();
+        let mut layer_actions: Vec<LayerAction> = Vec::new();
 
         egui::SidePanel::left("layers")
             .resizable(true)
@@ -154,14 +161,64 @@ impl UiState {
                     }
                     Some(ds) => {
                         let mut path = Vec::new();
+                        let renaming = self.renaming.as_deref();
                         for (i, node) in ds.doc.children.iter().enumerate() {
                             path.push(i);
-                            draw_layer(ui, node, &mut path, &mut self.selection);
+                            draw_layer(
+                                ui,
+                                node,
+                                &mut path,
+                                &mut self.selection,
+                                renaming,
+                                &mut self.rename_buffer,
+                                &mut layer_actions,
+                            );
                             path.pop();
                         }
                     }
                 }
             });
+
+        // Apply any layer actions (rename / delete) the panel emitted.
+        if !layer_actions.is_empty()
+            && let Some(ds) = doc_state.as_deref_mut()
+        {
+            for action in layer_actions {
+                match action {
+                    LayerAction::StartRename { path, current_id } => {
+                        self.renaming = Some(path);
+                        self.rename_buffer = current_id;
+                    }
+                    LayerAction::CommitRename { path, new_id } => {
+                        if let Some(node) = ds.doc.node_at_mut(&path) {
+                            let trimmed = new_id.trim();
+                            node.base_mut().id = if trimmed.is_empty() {
+                                None
+                            } else {
+                                Some(trimmed.to_string())
+                            };
+                            ds.dirty = true;
+                        }
+                        self.renaming = None;
+                        self.rename_buffer.clear();
+                    }
+                    LayerAction::CancelRename => {
+                        self.renaming = None;
+                        self.rename_buffer.clear();
+                    }
+                    LayerAction::Delete(path) => {
+                        if ds.doc.remove_at(&path) {
+                            ds.dirty = true;
+                            self.selection.retain(|s| !s.starts_with(&path));
+                            if self.renaming.as_ref() == Some(&path) {
+                                self.renaming = None;
+                                self.rename_buffer.clear();
+                            }
+                        }
+                    }
+                }
+            }
+        }
 
         // Apply pending adds from the layers panel before the inspector
         // captures doc_state. New nodes go into the currently-selected
@@ -650,21 +707,34 @@ fn length_drag(
     false
 }
 
+#[derive(Debug, Clone)]
+enum LayerAction {
+    StartRename {
+        path: Vec<usize>,
+        current_id: String,
+    },
+    CommitRename {
+        path: Vec<usize>,
+        new_id: String,
+    },
+    CancelRename,
+    Delete(Vec<usize>),
+}
+
 fn draw_layer(
     ui: &mut egui::Ui,
     node: &Node,
     path: &mut Vec<usize>,
     selection: &mut Vec<Vec<usize>>,
+    renaming: Option<&[usize]>,
+    rename_buffer: &mut String,
+    actions: &mut Vec<LayerAction>,
 ) {
     let label = node_label(node);
     let is_selected = selection.iter().any(|s| s.as_slice() == path.as_slice());
+    let is_renaming = renaming == Some(path.as_slice());
     let shift_held = ui.input(|i| i.modifiers.shift);
-
-    let children = match node {
-        Node::Group(g) => Some(&g.children),
-        Node::Frame(f) => Some(&f.children),
-        _ => None,
-    };
+    let current_id = node.base().id.clone().unwrap_or_default();
 
     let toggle = |selection: &mut Vec<Vec<usize>>, path: Vec<usize>| {
         if shift_held {
@@ -678,22 +748,92 @@ fn draw_layer(
         }
     };
 
+    let children = match node {
+        Node::Group(g) => Some(&g.children),
+        Node::Frame(f) => Some(&f.children),
+        _ => None,
+    };
+
+    let draw_row = |ui: &mut egui::Ui,
+                    label_text: &str,
+                    is_selected: bool,
+                    path: &[usize],
+                    selection: &mut Vec<Vec<usize>>,
+                    rename_buffer: &mut String,
+                    actions: &mut Vec<LayerAction>| {
+        if is_renaming {
+            let response = ui.add(
+                egui::TextEdit::singleline(rename_buffer)
+                    .id(egui::Id::new(("layer-rename", path.to_vec())))
+                    .desired_width(160.0),
+            );
+            if !response.has_focus() {
+                response.request_focus();
+            }
+            if ui.input(|i| i.key_pressed(egui::Key::Enter)) {
+                actions.push(LayerAction::CommitRename {
+                    path: path.to_vec(),
+                    new_id: rename_buffer.clone(),
+                });
+            } else if ui.input(|i| i.key_pressed(egui::Key::Escape)) || response.lost_focus() {
+                actions.push(LayerAction::CancelRename);
+            }
+        } else {
+            let response = ui.selectable_label(is_selected, label_text);
+            if response.double_clicked() {
+                actions.push(LayerAction::StartRename {
+                    path: path.to_vec(),
+                    current_id: current_id.clone(),
+                });
+            } else if response.clicked() {
+                toggle(selection, path.to_vec());
+            }
+            response.context_menu(|ui| {
+                if ui.button("Rename").clicked() {
+                    actions.push(LayerAction::StartRename {
+                        path: path.to_vec(),
+                        current_id: current_id.clone(),
+                    });
+                    ui.close();
+                }
+                if ui.button("Delete").clicked() {
+                    actions.push(LayerAction::Delete(path.to_vec()));
+                    ui.close();
+                }
+            });
+        }
+    };
+
     if let Some(children) = children {
         egui::CollapsingHeader::new(label.clone())
             .id_salt(path.as_slice())
             .default_open(true)
             .show(ui, |ui| {
-                if ui.selectable_label(is_selected, "(this layer)").clicked() {
-                    toggle(selection, path.clone());
-                }
+                draw_row(
+                    ui,
+                    "(this layer)",
+                    is_selected,
+                    path,
+                    selection,
+                    rename_buffer,
+                    actions,
+                );
                 for (i, child) in children.iter().enumerate() {
                     path.push(i);
-                    draw_layer(ui, child, path, selection);
+                    draw_layer(ui, child, path, selection, renaming, rename_buffer, actions);
                     path.pop();
                 }
             });
-    } else if ui.selectable_label(is_selected, label).clicked() {
-        toggle(selection, path.clone());
+    } else {
+        draw_row(
+            ui,
+            &label,
+            is_selected,
+            path,
+            selection,
+            rename_buffer,
+            actions,
+        );
     }
 }
 
