@@ -707,7 +707,11 @@ fn translate_node(node: &mut Node, d: Vec2) {
             RulerOrientation::Horizontal => r.position += d.y,
             RulerOrientation::Vertical => r.position += d.x,
         },
-        Node::Group(_) | Node::Text(_) => {}
+        Node::Use(u) => {
+            u.x += d.x;
+            u.y += d.y;
+        }
+        Node::Group(_) | Node::Text(_) | Node::Component(_) => {}
     }
 }
 

@@ -86,6 +86,14 @@ impl NativeMenuBar {
             MenuAction::SaveAs,
             &mut items,
         );
+        file.append(&PredefinedMenuItem::separator()).unwrap();
+        add(
+            &file,
+            "Export PNG…",
+            Some(accel(CMD | MudaModifiers::SHIFT, Code::KeyE)),
+            MenuAction::ExportPng,
+            &mut items,
+        );
         #[cfg(not(target_os = "macos"))]
         {
             file.append(&PredefinedMenuItem::separator()).unwrap();

@@ -25,8 +25,8 @@ use quick_xml::escape::unescape;
 use quick_xml::events::{BytesStart, Event};
 use youeye_doc::kurbo;
 use youeye_doc::{
-    Color, Document, Ellipse, Fill, Frame, Group, Node, NodeBase, Paint, Path, Rect, Ruler,
-    RulerOrientation, Stroke, Text, Tokens, Variables, ViewBox,
+    Color, Component, Document, Ellipse, Fill, Frame, Group, Node, NodeBase, Paint, Path, Rect,
+    Ruler, RulerOrientation, Stroke, Text, Tokens, UseRef, Variables, ViewBox,
 };
 
 use crate::LINE_ENDING;
@@ -209,6 +209,20 @@ fn parse_children(
                         parse_children(reader, &mut children, &mut nested_style, b"g")?;
                         out.push(Node::Group(Group { base, children }));
                     }
+                    b"defs" => {
+                        // <defs> is a transparent wrapper — its children bubble
+                        // up into the surrounding scope. We don't preserve the
+                        // wrapper explicitly; serialize wraps <symbol>s in one.
+                        let _ = base;
+                        let mut nested_style: Option<String> = None;
+                        parse_children(reader, out, &mut nested_style, b"defs")?;
+                    }
+                    b"symbol" => {
+                        let mut children = Vec::new();
+                        let mut nested_style: Option<String> = None;
+                        parse_children(reader, &mut children, &mut nested_style, b"symbol")?;
+                        out.push(Node::Component(Component { base, children }));
+                    }
                     b"svg" => {
                         // Nested <svg> is the on-wire form of a Frame: its own
                         // viewport, clipping, and local coordinate space for
@@ -325,6 +339,31 @@ fn parse_children(
                     b"g" => {
                         // Empty self-closing group — rare, but legal.
                         out.push(Node::Group(Group {
+                            base,
+                            children: Vec::new(),
+                        }));
+                    }
+                    b"use" => {
+                        let x = parse_f64(base.extra_attrs.get("x")).unwrap_or(0.0);
+                        let y = parse_f64(base.extra_attrs.get("y")).unwrap_or(0.0);
+                        let href_raw = base
+                            .extra_attrs
+                            .get("href")
+                            .or_else(|| base.extra_attrs.get("xlink:href"))
+                            .cloned()
+                            .unwrap_or_default();
+                        let href = href_raw
+                            .trim()
+                            .strip_prefix('#')
+                            .unwrap_or(href_raw.trim())
+                            .to_string();
+                        let mut base = strip_shape_attrs(base, &["x", "y", "href", "xlink:href"]);
+                        base.extra_attrs.remove("xlink:href");
+                        out.push(Node::Use(UseRef { base, href, x, y }));
+                    }
+                    b"symbol" => {
+                        // Empty self-closing <symbol/> — valid, just no body.
+                        out.push(Node::Component(Component {
                             base,
                             children: Vec::new(),
                         }));
@@ -729,6 +768,25 @@ fn write_node(out: &mut String, depth: usize, node: &Node) {
             out.push_str("</text>");
             out.push_str(LINE_ENDING);
         }
+        Node::Component(c) => {
+            let attrs = attrs_for_base(&c.base);
+            if c.children.is_empty() {
+                write_open_tag(out, depth, "symbol", &attrs, true);
+            } else {
+                write_open_tag(out, depth, "symbol", &attrs, false);
+                for child in &c.children {
+                    write_node(out, depth + 1, child);
+                }
+                write_close_tag(out, depth, "symbol");
+            }
+        }
+        Node::Use(u) => {
+            let mut attrs = attrs_for_base(&u.base);
+            attrs.insert("href".into(), format!("#{}", u.href));
+            attrs.insert("x".into(), fmt_num(u.x));
+            attrs.insert("y".into(), fmt_num(u.y));
+            write_open_tag(out, depth, "use", &attrs, true);
+        }
         Node::Ruler(r) => {
             let mut attrs = attrs_for_base(&r.base);
             // Huge dummy line bounds — the ruler's real extent comes from its
@@ -906,6 +964,7 @@ fn has_any_youeye_usage(doc: &Document) -> bool {
         match n {
             Node::Group(g) => g.children.iter().any(walk),
             Node::Frame(f) => f.children.iter().any(walk),
+            Node::Component(c) => c.children.iter().any(walk),
             Node::Ruler(_) => true,
             _ => false,
         }
@@ -1209,6 +1268,57 @@ mod tests {
         );
 
         assert_canonical_stable(input);
+    }
+
+    #[test]
+    fn symbol_and_use_round_trip() {
+        let input = r##"<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg">
+  <symbol id="icon-heart">
+    <rect height="20" width="20" x="0" y="0"/>
+  </symbol>
+  <use href="#icon-heart" x="10" y="10"/>
+</svg>"##;
+        let out = assert_canonical_stable(input);
+        assert!(out.contains(r#"<symbol id="icon-heart">"#));
+        assert!(out.contains(r##"<use href="#icon-heart" x="10" y="10"/>"##));
+    }
+
+    #[test]
+    fn defs_is_transparent_wrapper() {
+        let input = r##"<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg">
+  <defs>
+    <symbol id="dot"><rect x="0" y="0" width="4" height="4"/></symbol>
+  </defs>
+  <use href="#dot" x="50" y="50"/>
+</svg>"##;
+        // <defs> wrapper is discarded; contents bubble up. Output should have
+        // the <symbol> at doc root directly.
+        let doc = from_svg(input).unwrap();
+        let has_component = doc.children.iter().any(|c| matches!(c, Node::Component(_)));
+        assert!(has_component);
+        let has_use = doc.children.iter().any(|c| matches!(c, Node::Use(_)));
+        assert!(has_use);
+        // Canonical output is stable.
+        let out1 = to_svg(&doc);
+        let doc2 = from_svg(&out1).unwrap();
+        assert_eq!(to_svg(&doc2), out1);
+    }
+
+    #[test]
+    fn use_xlink_href_is_normalized() {
+        let input = r##"<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg">
+  <symbol id="tag"/>
+  <use xlink:href="#tag" x="0" y="0"/>
+</svg>"##;
+        let doc = from_svg(input).unwrap();
+        let u = doc.children.iter().find_map(|c| match c {
+            Node::Use(u) => Some(u),
+            _ => None,
+        });
+        assert_eq!(u.unwrap().href, "tag");
     }
 
     #[test]

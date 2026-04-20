@@ -44,8 +44,39 @@ pub fn build(scene: &mut Scene, doc: &Document, root_xform: Affine) {
         constraints::collect_rulers(&doc.children),
     );
     for node in &doc.children {
-        render_node(scene, node, root_xform, root_bounds, &root_scope);
+        render_node(scene, node, root_xform, root_bounds, &root_scope, doc);
     }
+}
+
+/// Find a component definition by id anywhere in the doc tree. Walks
+/// doc.children and descends into Groups, Frames, and Components (so
+/// nested definitions still resolve) but not Uses (no recursion).
+fn find_component<'a>(doc: &'a Document, id: &str) -> Option<&'a youeye_doc::Component> {
+    fn walk<'a>(children: &'a [Node], id: &str) -> Option<&'a youeye_doc::Component> {
+        for child in children {
+            match child {
+                Node::Component(c) if c.base.id.as_deref() == Some(id) => return Some(c),
+                Node::Component(c) => {
+                    if let Some(found) = walk(&c.children, id) {
+                        return Some(found);
+                    }
+                }
+                Node::Group(g) => {
+                    if let Some(found) = walk(&g.children, id) {
+                        return Some(found);
+                    }
+                }
+                Node::Frame(f) => {
+                    if let Some(found) = walk(&f.children, id) {
+                        return Some(found);
+                    }
+                }
+                _ => {}
+            }
+        }
+        None
+    }
+    walk(&doc.children, id)
 }
 
 fn render_node(
@@ -54,6 +85,7 @@ fn render_node(
     parent_xform: Affine,
     parent_bounds: KRect,
     scope: &RulerScope<'_>,
+    doc: &Document,
 ) {
     let base_xform = parent_xform * node.base().transform;
     // Apply any pin-to-ruler translation before drawing. Containers don't
@@ -67,7 +99,7 @@ fn render_node(
             let child_scope =
                 constraints::extend_scope(scope, constraints::collect_rulers(&g.children));
             for c in &g.children {
-                render_node(scene, c, xform, parent_bounds, &child_scope);
+                render_node(scene, c, xform, parent_bounds, &child_scope, doc);
             }
         }
         Node::Frame(f) => {
@@ -80,22 +112,22 @@ fn render_node(
                     for (child, placed) in f.children.iter().zip(positions.iter()) {
                         match (child, placed) {
                             (Node::Ruler(_), _) => {
-                                render_node(scene, child, local, bounds, &child_scope);
+                                render_node(scene, child, local, bounds, &child_scope, doc);
                             }
                             (_, Some(layout_pos)) => {
                                 let shift = layout_pos.top_left - layout::authored_top_left(child);
                                 let child_xform = local * Affine::translate(shift);
-                                render_node(scene, child, child_xform, bounds, &child_scope);
+                                render_node(scene, child, child_xform, bounds, &child_scope, doc);
                             }
                             (_, None) => {
-                                render_node(scene, child, local, bounds, &child_scope);
+                                render_node(scene, child, local, bounds, &child_scope, doc);
                             }
                         }
                     }
                 }
                 None => {
                     for c in &f.children {
-                        render_node(scene, c, local, bounds, &child_scope);
+                        render_node(scene, c, local, bounds, &child_scope, doc);
                     }
                 }
             }
@@ -116,6 +148,20 @@ fn render_node(
         }
         Node::Ruler(r) => {
             render_ruler(scene, r, xform, parent_bounds);
+        }
+        Node::Component(_) => {
+            // Definitions don't draw on their own — only `Use` references do.
+        }
+        Node::Use(u) => {
+            let Some(target) = find_component(doc, &u.href) else {
+                return;
+            };
+            let use_xform = xform * Affine::translate(Vec2::new(u.x, u.y));
+            let inner_scope =
+                constraints::extend_scope(scope, constraints::collect_rulers(&target.children));
+            for c in &target.children {
+                render_node(scene, c, use_xform, parent_bounds, &inner_scope, doc);
+            }
         }
     }
 }

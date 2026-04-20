@@ -12,7 +12,10 @@ pub mod node;
 pub mod style;
 pub mod tokens;
 
-pub use node::{Ellipse, Frame, Group, Node, NodeBase, Path, Rect, Ruler, RulerOrientation, Text};
+pub use node::{
+    Component, Ellipse, Frame, Group, Node, NodeBase, Path, Rect, Ruler, RulerOrientation, Text,
+    UseRef,
+};
 pub use style::{Color, Fill, Paint, Stroke};
 pub use tokens::{Tokens, Variables};
 
@@ -102,6 +105,7 @@ fn node_children(node: &Node) -> Option<&Vec<Node>> {
     match node {
         Node::Group(g) => Some(&g.children),
         Node::Frame(f) => Some(&f.children),
+        Node::Component(c) => Some(&c.children),
         _ => None,
     }
 }
@@ -110,6 +114,7 @@ fn node_children_mut(node: &mut Node) -> Option<&mut Vec<Node>> {
     match node {
         Node::Group(g) => Some(&mut g.children),
         Node::Frame(f) => Some(&mut f.children),
+        Node::Component(c) => Some(&mut c.children),
         _ => None,
     }
 }

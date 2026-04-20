@@ -626,6 +626,8 @@ fn node_kind(node: &Node) -> &'static str {
         Node::Path(_) => "Path",
         Node::Text(_) => "Text",
         Node::Ruler(_) => "Ruler",
+        Node::Component(_) => "Component",
+        Node::Use(_) => "Use",
     }
 }
 

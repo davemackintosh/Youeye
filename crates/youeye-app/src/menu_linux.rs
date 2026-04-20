@@ -60,6 +60,14 @@ impl MenuBar for EguiMenuBar {
                     ui.separator();
                     item(
                         ui,
+                        "Export PNG…",
+                        sc(Modifiers::COMMAND | Modifiers::SHIFT, Key::E),
+                        MenuAction::ExportPng,
+                        actions,
+                    );
+                    ui.separator();
+                    item(
+                        ui,
                         "Quit",
                         sc(Modifiers::COMMAND, Key::Q),
                         MenuAction::Quit,

@@ -21,6 +21,7 @@ pub enum MenuAction {
     OpenProject,
     Save,
     SaveAs,
+    ExportPng,
     Quit,
     // Edit
     Undo,

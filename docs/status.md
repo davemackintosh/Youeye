@@ -12,6 +12,8 @@ Last updated: **2026-04-20**.
 **Phase 4 — Tokens + variables UI with enforcement** 🚧 slices A+B+C done, D deferred.
 **Phase 5 — Rulers + constraints** ✅ core done (pin solver deferred to direct-math; kasuari upgrade pending real multi-constraint scenarios).
 **Phase 6 — Primitive tools** 🚧 click-drag creation + select/move/resize done; pen, text, line, boolean ops, rotation deferred.
+**Phase 7 — Components** 🚧 symbol/use I/O + render expansion done; overrides + variants + Linear-style component picker UI deferred.
+**Phase 8 — Polish + distribution** 🚧 PNG export done; parley text, PDF export, cargo-packager signing, font library deferred.
 
 - 1a — Workspace scaffold, egui + winit + wgpu window with chrome (toolbar, layers, inspector, status bar, menu bar).
 - 1b — Vello canvas with pan/zoom, rendered into an offscreen `Rgba8Unorm` texture registered as an egui native texture.
@@ -181,16 +183,33 @@ Sliced A/B/C like phase 2. **Decision:** Frame is a nested `<svg>` on wire — i
 
 ### Phase 7 — Components
 
-- Reusable components backed by `<symbol>` + `<use>`.
-- Instance overrides via `youeye:override-*` attrs (text, colour, variant).
-- Variant picker UI.
+**Done ✅**
+- `Node::Component { base, children }` serializes to `<symbol id=...>`; `Node::Use { base, href, x, y }` serializes to `<use href="#id" x=.. y=..>`. `xlink:href` is also accepted on parse (normalized to `href`).
+- `<defs>` is parsed as a transparent wrapper — its children bubble up into the surrounding scope. We don't preserve the wrapper; serializer emits `<symbol>`s directly at doc root. Good enough for our own files; re-importing foreign SVGs that rely on `<defs>` structure may lose the grouping.
+- Scene builder expands `Use` at render time by walking the doc for a matching `Component` id (recurses into Groups/Frames/Components so nested definitions resolve). Children render translated by `(Use.x, Use.y)`.
+- 3 new io tests (symbol/use round-trip, defs transparency, xlink:href normalization).
+
+**Still deferred**
+- Instance overrides (`youeye:override-fill`, `override-text`, etc.) — the inspector needs per-instance pickers that write these attrs, and the renderer needs to apply them to the expanded component's matching sub-nodes.
+- Variants — a component with multiple child subtrees, selected via `youeye:variant="primary"` on the `Use` instance.
+- Component picker UI (create component from current selection, insert from a palette).
 
 ### Phase 8 — Polish + distribution
 
-- Export: SVG (already the native format), PNG via vello headless render, PDF later.
-- Fonts: parley integration with system + user-library fonts.
-- Packaging: `cargo-packager` for `.app` (signed + notarized on Mac), `.msi`/`.exe` on Windows, AppImage on Linux.
-- CI: add release workflow that produces signed artifacts on tag push.
+**Done ✅**
+- **PNG export** — File > Export PNG… (⌘⇧E) via `rfd` save dialog. Renders a fresh scene (no grid, selection, or camera transform) through a temporary vello `Renderer` into an offscreen `Rgba8Unorm` texture sized at `viewBox` × 2 (clamped to adapter `max_texture_dimension_2d`). Copies texture to staging buffer via `copy_texture_to_buffer`, strips 256-byte row padding, encodes PNG via the `png` crate.
+- Transparent background on export (base_color alpha 0).
+
+**Known quirk**
+- Vello renders into linear `Rgba8Unorm`, not sRGB, so PNG colours may look slightly washed compared to a sRGB-encoded framebuffer. Same trade-off the canvas already has; fixing cleanly means either rendering into a `Rgba8UnormSrgb` target or gamma-converting on readback.
+
+**Still deferred**
+- PDF export.
+- Parley text rendering — Text nodes currently don't draw. Needs parley Layout + vello `Scene::draw_glyphs` + font loading via fontique.
+- Base64-embedded fonts in `<style>@font-face {...}</style>` (project-embedded).
+- User font library (custom fonts in the app data dir).
+- Packaging — `cargo-packager` setup for `.app` (signed + notarized on Mac), `.msi`/`.exe` on Windows, AppImage on Linux.
+- CI release workflow that produces signed artifacts on tag push.
 
 ## Known quirks to keep in mind
 

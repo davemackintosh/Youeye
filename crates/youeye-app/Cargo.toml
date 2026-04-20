@@ -30,6 +30,7 @@ tracing-subscriber.workspace = true
 
 pollster = "0.4"
 rfd = "0.14"
+png = "0.17"
 
 # muda is GTK-backed on Linux; we don't want that dep on Linux builds.
 # Linux uses the in-window egui menu bar instead.

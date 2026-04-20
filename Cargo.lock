@@ -4709,6 +4709,7 @@ dependencies = [
  "egui-winit",
  "kurbo",
  "muda",
+ "png 0.17.16",
  "pollster 0.4.0",
  "rfd",
  "tracing",

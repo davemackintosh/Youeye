@@ -117,7 +117,8 @@ pub fn authored_top_left(node: &Node) -> Vec2 {
             let b = p.data.bounding_box();
             Vec2::new(b.x0, b.y0)
         }
-        Node::Group(_) | Node::Text(_) | Node::Ruler(_) => Vec2::ZERO,
+        Node::Use(u) => Vec2::new(u.x, u.y),
+        Node::Group(_) | Node::Text(_) | Node::Ruler(_) | Node::Component(_) => Vec2::ZERO,
     }
 }
 
@@ -130,9 +131,11 @@ fn child_size(node: &Node) -> (f64, f64) {
             let b = p.data.bounding_box();
             (b.width(), b.height())
         }
-        // Groups and text without parley lack a reliable intrinsic size; they
-        // contribute 0x0 to the flex layout. Good enough until phase 8.
-        Node::Group(_) | Node::Text(_) | Node::Ruler(_) => (0.0, 0.0),
+        // Groups, text (no parley yet), rulers, and component defs/uses
+        // contribute 0x0 to the flex layout. Good enough for now.
+        Node::Group(_) | Node::Text(_) | Node::Ruler(_) | Node::Component(_) | Node::Use(_) => {
+            (0.0, 0.0)
+        }
     }
 }
 

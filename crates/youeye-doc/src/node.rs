@@ -39,6 +39,11 @@ pub enum Node {
     Path(Path),
     Text(Text),
     Ruler(Ruler),
+    /// A reusable component definition. Serializes to `<symbol id=...>`.
+    /// Its children don't render directly — only `Use` references draw them.
+    Component(Component),
+    /// An instance of a component. Serializes to `<use href="#id" x=.. y=..>`.
+    Use(UseRef),
 }
 
 impl Node {
@@ -51,6 +56,8 @@ impl Node {
             Node::Path(n) => &n.base,
             Node::Text(n) => &n.base,
             Node::Ruler(n) => &n.base,
+            Node::Component(n) => &n.base,
+            Node::Use(n) => &n.base,
         }
     }
 
@@ -63,6 +70,8 @@ impl Node {
             Node::Path(n) => &mut n.base,
             Node::Text(n) => &mut n.base,
             Node::Ruler(n) => &mut n.base,
+            Node::Component(n) => &mut n.base,
+            Node::Use(n) => &mut n.base,
         }
     }
 }
@@ -146,4 +155,22 @@ pub struct Ruler {
     /// space. For a horizontal ruler this is the `y` value the line sits at;
     /// for vertical it's the `x` value.
     pub position: f64,
+}
+
+/// A reusable component definition — SVG `<symbol>`. Its `base.id` is the
+/// lookup key; children render whenever a [`UseRef`] points at it.
+#[derive(Debug, Clone, Default)]
+pub struct Component {
+    pub base: NodeBase,
+    pub children: Vec<Node>,
+}
+
+/// An instance reference to a [`Component`] — SVG `<use href="#id">`.
+/// `href` is stored with the leading `#` stripped (so it's just the id).
+#[derive(Debug, Clone, Default)]
+pub struct UseRef {
+    pub base: NodeBase,
+    pub href: String,
+    pub x: f64,
+    pub y: f64,
 }

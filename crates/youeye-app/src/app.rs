@@ -380,6 +380,7 @@ impl App {
                 MenuAction::OpenProject => self.open_file_dialog(),
                 MenuAction::Save => self.save(),
                 MenuAction::SaveAs => self.save_as_dialog(),
+                MenuAction::ExportPng => self.export_png_dialog(),
                 MenuAction::NewProject => {
                     self.doc_state = Some(DocumentState::new(Document::default(), None));
                     self.request_redraw();
@@ -450,6 +451,25 @@ impl App {
                 info!(?path, "saved document");
             }
             Err(e) => warn!("write {path:?}: {e:?}"),
+        }
+    }
+
+    fn export_png_dialog(&mut self) {
+        let Some(ds) = self.doc_state.as_ref() else {
+            return;
+        };
+        let Some(state) = self.state.as_ref() else {
+            return;
+        };
+        let Some(path) = rfd::FileDialog::new()
+            .add_filter("PNG", &["png"])
+            .save_file()
+        else {
+            return;
+        };
+        match crate::export::export_png(&state.device, &state.queue, &ds.doc, &path) {
+            Ok(()) => info!(?path, "exported PNG"),
+            Err(e) => warn!("export png {path:?}: {e:?}"),
         }
     }
 }
