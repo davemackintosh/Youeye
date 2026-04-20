@@ -433,6 +433,15 @@ fn draw_dict_editor(
                 ui.label(prefix);
                 ui.add(egui::TextEdit::singleline(&mut new_name).desired_width(100.0));
                 ui.label(":");
+                // Inline picker when the value parses as a colour — the
+                // TextEdit stays visible so free-form editing (paste, `var()`,
+                // named colours) still works.
+                if let Some(current) = parse_hint_color(&new_value) {
+                    let mut rgba = [current.r(), current.g(), current.b(), current.a()];
+                    if ui.color_edit_button_srgba_unmultiplied(&mut rgba).changed() {
+                        new_value = format_hex_rgba(rgba[0], rgba[1], rgba[2], rgba[3]);
+                    }
+                }
                 ui.add(egui::TextEdit::singleline(&mut new_value).desired_width(120.0));
                 draw_value_hint(ui, &new_value);
                 if ui.small_button("×").on_hover_text("Delete").clicked() {
@@ -805,7 +814,7 @@ fn draw_layer(
     };
 
     if let Some(children) = children {
-        egui::CollapsingHeader::new(label.clone())
+        let collapse = egui::CollapsingHeader::new(label.clone())
             .id_salt(path.as_slice())
             .default_open(true)
             .show(ui, |ui| {
@@ -824,6 +833,23 @@ fn draw_layer(
                     path.pop();
                 }
             });
+        // Rename / delete on the header itself too — users expect the row
+        // with the container's name to accept right-click. Double-click is
+        // reserved for egui's built-in collapse toggle, so only the context
+        // menu triggers rename here.
+        collapse.header_response.context_menu(|ui| {
+            if ui.button("Rename").clicked() {
+                actions.push(LayerAction::StartRename {
+                    path: path.clone(),
+                    current_id: current_id.clone(),
+                });
+                ui.close();
+            }
+            if ui.button("Delete").clicked() {
+                actions.push(LayerAction::Delete(path.clone()));
+                ui.close();
+            }
+        });
     } else {
         draw_row(
             ui,
@@ -952,6 +978,15 @@ fn parse_hint_color(s: &str) -> Option<Color32> {
         }
     }
     None
+}
+
+/// Emit `#rrggbb` if `a == 255`, else `#rrggbbaa`.
+fn format_hex_rgba(r: u8, g: u8, b: u8, a: u8) -> String {
+    if a == 255 {
+        format!("#{r:02x}{g:02x}{b:02x}")
+    } else {
+        format!("#{r:02x}{g:02x}{b:02x}{a:02x}")
+    }
 }
 
 fn parse_length_unit(s: &str) -> Option<&'static str> {
