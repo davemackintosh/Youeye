@@ -25,6 +25,8 @@ jobs:
 
       # Linux needs development headers for winit/wgpu-backed apps even for a
       # plain `cargo check`, because winit links against wayland / X11 / GBM.
+      # fontconfig is pulled in by parley -> fontique for system font
+      # discovery on Linux.
       - name: install linux system deps
         if: runner.os == 'Linux'
         run: |
@@ -32,7 +34,9 @@ jobs:
           sudo apt-get install -y \
             libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev \
             libx11-dev libxcursor-dev libxi-dev libxrandr-dev libxinerama-dev \
-            libgl1-mesa-dev libegl1-mesa-dev libvulkan-dev pkg-config
+            libgl1-mesa-dev libegl1-mesa-dev libvulkan-dev \
+            libfontconfig1-dev \
+            pkg-config
 
       - name: cargo fmt
         run: cargo fmt --all -- --check
