@@ -28,31 +28,127 @@ impl MenuBar for EguiMenuBar {
         egui::TopBottomPanel::top("menu_bar").show(ctx, |ui| {
             egui::MenuBar::new().ui(ui, |ui| {
                 ui.menu_button("File", |ui| {
-                    item(ui, "New Project", sc(Modifiers::COMMAND, Key::N), MenuAction::NewProject, actions);
-                    item(ui, "Open Project…", sc(Modifiers::COMMAND, Key::O), MenuAction::OpenProject, actions);
+                    item(
+                        ui,
+                        "New Project",
+                        sc(Modifiers::COMMAND, Key::N),
+                        MenuAction::NewProject,
+                        actions,
+                    );
+                    item(
+                        ui,
+                        "Open Project…",
+                        sc(Modifiers::COMMAND, Key::O),
+                        MenuAction::OpenProject,
+                        actions,
+                    );
                     ui.separator();
-                    item(ui, "Save", sc(Modifiers::COMMAND, Key::S), MenuAction::Save, actions);
-                    item(ui, "Save As…", sc(Modifiers::COMMAND | Modifiers::SHIFT, Key::S), MenuAction::SaveAs, actions);
+                    item(
+                        ui,
+                        "Save",
+                        sc(Modifiers::COMMAND, Key::S),
+                        MenuAction::Save,
+                        actions,
+                    );
+                    item(
+                        ui,
+                        "Save As…",
+                        sc(Modifiers::COMMAND | Modifiers::SHIFT, Key::S),
+                        MenuAction::SaveAs,
+                        actions,
+                    );
                     ui.separator();
-                    item(ui, "Quit", sc(Modifiers::COMMAND, Key::Q), MenuAction::Quit, actions);
+                    item(
+                        ui,
+                        "Quit",
+                        sc(Modifiers::COMMAND, Key::Q),
+                        MenuAction::Quit,
+                        actions,
+                    );
                 });
                 ui.menu_button("Edit", |ui| {
-                    item(ui, "Undo", sc(Modifiers::COMMAND, Key::Z), MenuAction::Undo, actions);
-                    item(ui, "Redo", sc(Modifiers::COMMAND | Modifiers::SHIFT, Key::Z), MenuAction::Redo, actions);
+                    item(
+                        ui,
+                        "Undo",
+                        sc(Modifiers::COMMAND, Key::Z),
+                        MenuAction::Undo,
+                        actions,
+                    );
+                    item(
+                        ui,
+                        "Redo",
+                        sc(Modifiers::COMMAND | Modifiers::SHIFT, Key::Z),
+                        MenuAction::Redo,
+                        actions,
+                    );
                     ui.separator();
-                    item(ui, "Cut", sc(Modifiers::COMMAND, Key::X), MenuAction::Cut, actions);
-                    item(ui, "Copy", sc(Modifiers::COMMAND, Key::C), MenuAction::Copy, actions);
-                    item(ui, "Paste", sc(Modifiers::COMMAND, Key::V), MenuAction::Paste, actions);
-                    item(ui, "Duplicate", sc(Modifiers::COMMAND, Key::D), MenuAction::Duplicate, actions);
+                    item(
+                        ui,
+                        "Cut",
+                        sc(Modifiers::COMMAND, Key::X),
+                        MenuAction::Cut,
+                        actions,
+                    );
+                    item(
+                        ui,
+                        "Copy",
+                        sc(Modifiers::COMMAND, Key::C),
+                        MenuAction::Copy,
+                        actions,
+                    );
+                    item(
+                        ui,
+                        "Paste",
+                        sc(Modifiers::COMMAND, Key::V),
+                        MenuAction::Paste,
+                        actions,
+                    );
+                    item(
+                        ui,
+                        "Duplicate",
+                        sc(Modifiers::COMMAND, Key::D),
+                        MenuAction::Duplicate,
+                        actions,
+                    );
                     ui.separator();
-                    item(ui, "Select All", sc(Modifiers::COMMAND, Key::A), MenuAction::SelectAll, actions);
+                    item(
+                        ui,
+                        "Select All",
+                        sc(Modifiers::COMMAND, Key::A),
+                        MenuAction::SelectAll,
+                        actions,
+                    );
                 });
                 ui.menu_button("View", |ui| {
-                    item(ui, "Zoom In", sc(Modifiers::COMMAND, Key::Plus), MenuAction::ZoomIn, actions);
-                    item(ui, "Zoom Out", sc(Modifiers::COMMAND, Key::Minus), MenuAction::ZoomOut, actions);
+                    item(
+                        ui,
+                        "Zoom In",
+                        sc(Modifiers::COMMAND, Key::Plus),
+                        MenuAction::ZoomIn,
+                        actions,
+                    );
+                    item(
+                        ui,
+                        "Zoom Out",
+                        sc(Modifiers::COMMAND, Key::Minus),
+                        MenuAction::ZoomOut,
+                        actions,
+                    );
                     ui.separator();
-                    item(ui, "Zoom to Fit", sc(Modifiers::COMMAND, Key::Num0), MenuAction::ZoomToFit, actions);
-                    item(ui, "Actual Size", sc(Modifiers::COMMAND, Key::Num1), MenuAction::ZoomActual, actions);
+                    item(
+                        ui,
+                        "Zoom to Fit",
+                        sc(Modifiers::COMMAND, Key::Num0),
+                        MenuAction::ZoomToFit,
+                        actions,
+                    );
+                    item(
+                        ui,
+                        "Actual Size",
+                        sc(Modifiers::COMMAND, Key::Num1),
+                        MenuAction::ZoomActual,
+                        actions,
+                    );
                 });
                 ui.menu_button("Help", |ui| {
                     item(ui, "About youeye", None, MenuAction::About, actions);

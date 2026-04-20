@@ -61,11 +61,13 @@ struct AppState {
 
 impl AppState {
     fn new(event_loop: &ActiveEventLoop) -> anyhow::Result<Self> {
-        let window = Arc::new(event_loop.create_window(
-            Window::default_attributes()
-                .with_title("youeye")
-                .with_inner_size(winit::dpi::LogicalSize::new(1280.0, 800.0)),
-        )?);
+        let window = Arc::new(
+            event_loop.create_window(
+                Window::default_attributes()
+                    .with_title("youeye")
+                    .with_inner_size(winit::dpi::LogicalSize::new(1280.0, 800.0)),
+            )?,
+        );
 
         let instance = wgpu::Instance::new(&wgpu::InstanceDescriptor::default());
         let surface = instance.create_surface(window.clone())?;
@@ -76,14 +78,15 @@ impl AppState {
             force_fallback_adapter: false,
         }))?;
 
-        let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
-            label: Some("youeye device"),
-            required_features: wgpu::Features::empty(),
-            required_limits: adapter.limits(),
-            memory_hints: wgpu::MemoryHints::default(),
-            trace: wgpu::Trace::default(),
-            experimental_features: wgpu::ExperimentalFeatures::default(),
-        }))?;
+        let (device, queue) =
+            pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
+                label: Some("youeye device"),
+                required_features: wgpu::Features::empty(),
+                required_limits: adapter.limits(),
+                memory_hints: wgpu::MemoryHints::default(),
+                trace: wgpu::Trace::default(),
+                experimental_features: wgpu::ExperimentalFeatures::default(),
+            }))?;
 
         let max_dim = device.limits().max_texture_dimension_2d;
         let size = window.inner_size();
@@ -154,7 +157,10 @@ impl AppState {
         // Render the vello canvas into its offscreen texture first, using the
         // camera + size the previous frame recorded. egui then samples that
         // texture when the central panel draws below.
-        if let Err(e) = self.canvas.render(&self.device, &self.queue, &mut self.egui_renderer) {
+        if let Err(e) = self
+            .canvas
+            .render(&self.device, &self.queue, &mut self.egui_renderer)
+        {
             warn!("canvas render: {e:?}");
         }
 
@@ -183,9 +189,7 @@ impl AppState {
             .create_view(&wgpu::TextureViewDescriptor::default());
 
         let pixels_per_point = self.window.scale_factor() as f32;
-        let paint_jobs = self
-            .egui_ctx
-            .tessellate(output.shapes, pixels_per_point);
+        let paint_jobs = self.egui_ctx.tessellate(output.shapes, pixels_per_point);
         let screen = ScreenDescriptor {
             size_in_pixels: [self.surface_config.width, self.surface_config.height],
             pixels_per_point,
@@ -235,7 +239,8 @@ impl AppState {
             self.egui_renderer.render(&mut rpass, &paint_jobs, &screen);
         }
 
-        self.queue.submit(cmds.into_iter().chain([encoder.finish()]));
+        self.queue
+            .submit(cmds.into_iter().chain([encoder.finish()]));
         self.window.pre_present_notify();
         frame.present();
 
@@ -255,7 +260,10 @@ impl ApplicationHandler<UserEvent> for App {
         match AppState::new(event_loop) {
             Ok(state) => {
                 self.menu.attach(&state.window, &self.proxy);
-                info!("window ready at {}x{}", state.surface_config.width, state.surface_config.height);
+                info!(
+                    "window ready at {}x{}",
+                    state.surface_config.width, state.surface_config.height
+                );
                 self.state = Some(state);
             }
             Err(e) => {
@@ -265,12 +273,7 @@ impl ApplicationHandler<UserEvent> for App {
         }
     }
 
-    fn window_event(
-        &mut self,
-        event_loop: &ActiveEventLoop,
-        _id: WindowId,
-        event: WindowEvent,
-    ) {
+    fn window_event(&mut self, event_loop: &ActiveEventLoop, _id: WindowId, event: WindowEvent) {
         let Some(state) = self.state.as_mut() else {
             return;
         };
@@ -311,7 +314,10 @@ impl ApplicationHandler<UserEvent> for App {
         let Some(state) = self.state.as_mut() else {
             return;
         };
-        #[cfg_attr(not(any(target_os = "macos", target_os = "windows")), allow(unused_mut))]
+        #[cfg_attr(
+            not(any(target_os = "macos", target_os = "windows")),
+            allow(unused_mut)
+        )]
         let mut actions = Vec::new();
         match event {
             #[cfg(any(target_os = "macos", target_os = "windows"))]

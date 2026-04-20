@@ -10,8 +10,8 @@
 use std::collections::HashMap;
 
 use muda::{
-    accelerator::{Accelerator, Code, Modifiers as MudaModifiers},
     Menu, MenuEvent, MenuId, MenuItem, PredefinedMenuItem, Submenu,
+    accelerator::{Accelerator, Code, Modifiers as MudaModifiers},
 };
 use winit::event_loop::EventLoopProxy;
 use winit::window::Window;
@@ -57,38 +57,134 @@ impl NativeMenuBar {
 
         // File
         let file = Submenu::new("&File", true);
-        add(&file, "New Project", Some(accel(CMD, Code::KeyN)), MenuAction::NewProject, &mut items);
-        add(&file, "Open Project…", Some(accel(CMD, Code::KeyO)), MenuAction::OpenProject, &mut items);
+        add(
+            &file,
+            "New Project",
+            Some(accel(CMD, Code::KeyN)),
+            MenuAction::NewProject,
+            &mut items,
+        );
+        add(
+            &file,
+            "Open Project…",
+            Some(accel(CMD, Code::KeyO)),
+            MenuAction::OpenProject,
+            &mut items,
+        );
         file.append(&PredefinedMenuItem::separator()).unwrap();
-        add(&file, "Save", Some(accel(CMD, Code::KeyS)), MenuAction::Save, &mut items);
-        add(&file, "Save As…", Some(accel(CMD | MudaModifiers::SHIFT, Code::KeyS)), MenuAction::SaveAs, &mut items);
+        add(
+            &file,
+            "Save",
+            Some(accel(CMD, Code::KeyS)),
+            MenuAction::Save,
+            &mut items,
+        );
+        add(
+            &file,
+            "Save As…",
+            Some(accel(CMD | MudaModifiers::SHIFT, Code::KeyS)),
+            MenuAction::SaveAs,
+            &mut items,
+        );
         #[cfg(not(target_os = "macos"))]
         {
             file.append(&PredefinedMenuItem::separator()).unwrap();
-            add(&file, "Quit", Some(accel(CMD, Code::KeyQ)), MenuAction::Quit, &mut items);
+            add(
+                &file,
+                "Quit",
+                Some(accel(CMD, Code::KeyQ)),
+                MenuAction::Quit,
+                &mut items,
+            );
         }
         menu.append(&file).unwrap();
 
         // Edit
         let edit = Submenu::new("&Edit", true);
-        add(&edit, "Undo", Some(accel(CMD, Code::KeyZ)), MenuAction::Undo, &mut items);
-        add(&edit, "Redo", Some(accel(CMD | MudaModifiers::SHIFT, Code::KeyZ)), MenuAction::Redo, &mut items);
+        add(
+            &edit,
+            "Undo",
+            Some(accel(CMD, Code::KeyZ)),
+            MenuAction::Undo,
+            &mut items,
+        );
+        add(
+            &edit,
+            "Redo",
+            Some(accel(CMD | MudaModifiers::SHIFT, Code::KeyZ)),
+            MenuAction::Redo,
+            &mut items,
+        );
         edit.append(&PredefinedMenuItem::separator()).unwrap();
-        add(&edit, "Cut", Some(accel(CMD, Code::KeyX)), MenuAction::Cut, &mut items);
-        add(&edit, "Copy", Some(accel(CMD, Code::KeyC)), MenuAction::Copy, &mut items);
-        add(&edit, "Paste", Some(accel(CMD, Code::KeyV)), MenuAction::Paste, &mut items);
-        add(&edit, "Duplicate", Some(accel(CMD, Code::KeyD)), MenuAction::Duplicate, &mut items);
+        add(
+            &edit,
+            "Cut",
+            Some(accel(CMD, Code::KeyX)),
+            MenuAction::Cut,
+            &mut items,
+        );
+        add(
+            &edit,
+            "Copy",
+            Some(accel(CMD, Code::KeyC)),
+            MenuAction::Copy,
+            &mut items,
+        );
+        add(
+            &edit,
+            "Paste",
+            Some(accel(CMD, Code::KeyV)),
+            MenuAction::Paste,
+            &mut items,
+        );
+        add(
+            &edit,
+            "Duplicate",
+            Some(accel(CMD, Code::KeyD)),
+            MenuAction::Duplicate,
+            &mut items,
+        );
         edit.append(&PredefinedMenuItem::separator()).unwrap();
-        add(&edit, "Select All", Some(accel(CMD, Code::KeyA)), MenuAction::SelectAll, &mut items);
+        add(
+            &edit,
+            "Select All",
+            Some(accel(CMD, Code::KeyA)),
+            MenuAction::SelectAll,
+            &mut items,
+        );
         menu.append(&edit).unwrap();
 
         // View
         let view = Submenu::new("&View", true);
-        add(&view, "Zoom In", Some(accel(CMD, Code::Equal)), MenuAction::ZoomIn, &mut items);
-        add(&view, "Zoom Out", Some(accel(CMD, Code::Minus)), MenuAction::ZoomOut, &mut items);
+        add(
+            &view,
+            "Zoom In",
+            Some(accel(CMD, Code::Equal)),
+            MenuAction::ZoomIn,
+            &mut items,
+        );
+        add(
+            &view,
+            "Zoom Out",
+            Some(accel(CMD, Code::Minus)),
+            MenuAction::ZoomOut,
+            &mut items,
+        );
         view.append(&PredefinedMenuItem::separator()).unwrap();
-        add(&view, "Zoom to Fit", Some(accel(CMD, Code::Digit0)), MenuAction::ZoomToFit, &mut items);
-        add(&view, "Actual Size", Some(accel(CMD, Code::Digit1)), MenuAction::ZoomActual, &mut items);
+        add(
+            &view,
+            "Zoom to Fit",
+            Some(accel(CMD, Code::Digit0)),
+            MenuAction::ZoomToFit,
+            &mut items,
+        );
+        add(
+            &view,
+            "Actual Size",
+            Some(accel(CMD, Code::Digit1)),
+            MenuAction::ZoomActual,
+            &mut items,
+        );
         menu.append(&view).unwrap();
 
         // Help (Windows-only; macOS gets About in the app menu)

@@ -86,7 +86,9 @@ pub fn to_svg(doc: &Document) -> String {
     }
     // Ensure the default SVG namespace and our extension prefix are always
     // present in canonical output, even if the source didn't declare them.
-    attrs.entry("xmlns".into()).or_insert_with(|| "http://www.w3.org/2000/svg".into());
+    attrs
+        .entry("xmlns".into())
+        .or_insert_with(|| "http://www.w3.org/2000/svg".into());
     if has_any_youeye_usage(doc) {
         attrs
             .entry("xmlns:youeye".into())
@@ -208,11 +210,7 @@ fn parse_children(
                         }));
                     }
                     b"path" => {
-                        let d = base
-                            .extra_attrs
-                            .get("d")
-                            .map(String::as_str)
-                            .unwrap_or("");
+                        let d = base.extra_attrs.get("d").map(String::as_str).unwrap_or("");
                         let data = kurbo::BezPath::from_svg(d).unwrap_or_default();
                         out.push(Node::Path(Path {
                             base: strip_shape_attrs(base, &["d"]),
@@ -364,7 +362,9 @@ fn parse_view_box(s: &str) -> Option<ViewBox> {
 fn parse_length(s: &str) -> Option<f64> {
     let trimmed = s.trim();
     let end = trimmed
-        .find(|c: char| !(c.is_ascii_digit() || c == '.' || c == '-' || c == '+' || c == 'e' || c == 'E'))
+        .find(|c: char| {
+            !(c.is_ascii_digit() || c == '.' || c == '-' || c == '+' || c == 'e' || c == 'E')
+        })
         .unwrap_or(trimmed.len());
     trimmed[..end].parse().ok()
 }
@@ -734,7 +734,10 @@ fn has_any_youeye_usage(doc: &Document) -> bool {
         }
     }
     doc.children.iter().any(walk)
-        || doc.extra_attrs.keys().any(|k| k.starts_with("xmlns:youeye"))
+        || doc
+            .extra_attrs
+            .keys()
+            .any(|k| k.starts_with("xmlns:youeye"))
 }
 
 fn local_name(name: &[u8]) -> &[u8] {
@@ -864,7 +867,12 @@ mod tests {
     fn paint_hex_parses() {
         assert_eq!(
             parse_paint("#ff0000"),
-            Paint::Solid(Color { r: 1.0, g: 0.0, b: 0.0, a: 1.0 })
+            Paint::Solid(Color {
+                r: 1.0,
+                g: 0.0,
+                b: 0.0,
+                a: 1.0
+            })
         );
     }
 
@@ -880,4 +888,3 @@ mod tests {
         assert_eq!(p, Paint::Raw("var(--token-brand)".into()));
     }
 }
-

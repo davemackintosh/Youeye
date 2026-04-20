@@ -12,7 +12,7 @@ use vello::peniko::color::{AlphaColor, Srgb};
 use vello::peniko::{Brush, Color, Fill};
 use vello::{AaConfig, RenderParams, Renderer, RendererOptions, Scene};
 
-use crate::modifiers::{held, Modifier};
+use crate::modifiers::{Modifier, held};
 
 #[derive(Clone, Copy, Debug)]
 pub struct Camera {
@@ -146,13 +146,8 @@ impl Canvas {
             self.space_held = i.key_down(egui::Key::Space);
         });
 
-        let (scroll_delta, modifiers, pointer) = ui.input(|i| {
-            (
-                i.smooth_scroll_delta,
-                i.modifiers,
-                i.pointer.hover_pos(),
-            )
-        });
+        let (scroll_delta, modifiers, pointer) =
+            ui.input(|i| (i.smooth_scroll_delta, i.modifiers, i.pointer.hover_pos()));
 
         let panning = (self.space_held && response.dragged())
             || response.dragged_by(egui::PointerButton::Middle);
@@ -205,12 +200,10 @@ impl Canvas {
         for i in -20..=20 {
             let x = (i * 50) as f64;
             let line = Line::new(Point::new(x, -1000.0), Point::new(x, 1000.0));
-            self.scene
-                .stroke(&grid, xform, &grid_brush, None, &line);
+            self.scene.stroke(&grid, xform, &grid_brush, None, &line);
             let y = (i * 50) as f64;
             let line = Line::new(Point::new(-1000.0, y), Point::new(1000.0, y));
-            self.scene
-                .stroke(&grid, xform, &grid_brush, None, &line);
+            self.scene.stroke(&grid, xform, &grid_brush, None, &line);
         }
 
         // Origin crosshair.

@@ -77,8 +77,13 @@ mod tests {
     #[test]
     fn base_mut_through_enum() {
         let mut node = Node::Group(Group::default());
-        node.base_mut().youeye_attrs.insert("layout".into(), "flex".into());
-        assert_eq!(node.base().youeye_attrs.get("layout").map(String::as_str), Some("flex"));
+        node.base_mut()
+            .youeye_attrs
+            .insert("layout".into(), "flex".into());
+        assert_eq!(
+            node.base().youeye_attrs.get("layout").map(String::as_str),
+            Some("flex")
+        );
     }
 
     #[test]
@@ -118,7 +123,10 @@ mod tests {
     fn document_can_nest_groups_and_frames() {
         let mut root = Group::default();
         root.children.push(Node::Rect(Rect {
-            base: NodeBase { id: Some("bg".into()), ..Default::default() },
+            base: NodeBase {
+                id: Some("bg".into()),
+                ..Default::default()
+            },
             width: 320.0,
             height: 200.0,
             ..Default::default()
@@ -127,11 +135,19 @@ mod tests {
         let mut frame = Frame::default();
         frame.width = 320.0;
         frame.height = 200.0;
-        frame.base.youeye_attrs.insert("layout".into(), "flex".into());
+        frame
+            .base
+            .youeye_attrs
+            .insert("layout".into(), "flex".into());
         frame.children.push(Node::Group(root));
 
         let doc = Document {
-            view_box: Some(ViewBox { min_x: 0.0, min_y: 0.0, width: 320.0, height: 200.0 }),
+            view_box: Some(ViewBox {
+                min_x: 0.0,
+                min_y: 0.0,
+                width: 320.0,
+                height: 200.0,
+            }),
             width: Some(320.0),
             height: Some(200.0),
             children: vec![Node::Frame(frame)],
