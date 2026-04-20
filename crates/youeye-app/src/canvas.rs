@@ -633,6 +633,12 @@ fn hit_test_impl(
                     *result = Some(path.clone());
                 }
             }
+            Node::Text(t) => {
+                let (bx, by, bw, bh) = text_bbox(t);
+                if inside_rect(local, bx, by, bw, bh) {
+                    *result = Some(path.clone());
+                }
+            }
             Node::Frame(f) => {
                 if inside_rect(local, f.x, f.y, f.width, f.height) {
                     *result = Some(path.clone());
@@ -706,6 +712,15 @@ fn local_bounds(node: &Node, origin: Vec2) -> ShapeBounds {
                 h: b.height(),
             }
         }
+        Node::Text(t) => {
+            let (bx, by, bw, bh) = text_bbox(t);
+            ShapeBounds {
+                x: origin.x + bx,
+                y: origin.y + by,
+                w: bw,
+                h: bh,
+            }
+        }
         _ => ShapeBounds {
             x: origin.x,
             y: origin.y,
@@ -713,6 +728,19 @@ fn local_bounds(node: &Node, origin: Vec2) -> ShapeBounds {
             h: 0.0,
         },
     }
+}
+
+/// Rough bounding box for a Text node in its parent's coord space. Width
+/// uses the crude `0.55 * font_size * char_count` heuristic and `(x, y)`
+/// in SVG is the *baseline* of the first glyph, so the top of the bbox
+/// sits above that by the ascent (approx. 0.85 * font_size).
+fn text_bbox(t: &youeye_doc::Text) -> (f64, f64, f64, f64) {
+    let size = t.font_size.unwrap_or(16.0);
+    let chars = t.content.chars().count().max(1) as f64;
+    let w = (0.55 * size * chars).max(size * 0.5);
+    let h = size * 1.2;
+    let top = t.y - size * 0.85;
+    (t.x, top, w, h)
 }
 
 // ---- translate + resize ----
@@ -753,7 +781,11 @@ fn translate_node(node: &mut Node, d: Vec2) {
             u.x += d.x;
             u.y += d.y;
         }
-        Node::Group(_) | Node::Text(_) | Node::Component(_) => {}
+        Node::Text(t) => {
+            t.x += d.x;
+            t.y += d.y;
+        }
+        Node::Group(_) | Node::Component(_) => {}
     }
 }
 
