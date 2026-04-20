@@ -1,8 +1,9 @@
 //! egui layout: sidebars, status bar, central canvas.
 
 use egui::{Color32, RichText};
-use youeye_doc::{Document, Node};
+use youeye_doc::{Frame, Node};
 
+use crate::app::DocumentState;
 use crate::canvas::Canvas;
 use crate::menu::MenuAction;
 
@@ -33,7 +34,7 @@ impl UiState {
         ctx: &egui::Context,
         _actions: &mut Vec<MenuAction>,
         canvas: &mut Canvas,
-        doc: Option<&Document>,
+        doc_state: Option<&mut DocumentState>,
     ) {
         egui::TopBottomPanel::top("toolbar")
             .exact_height(36.0)
@@ -65,16 +66,16 @@ impl UiState {
             .show(ctx, |ui| {
                 ui.heading("Layers");
                 ui.separator();
-                match doc {
+                match doc_state.as_deref() {
                     None => {
                         ui.label(RichText::new("No screen open").color(Color32::GRAY));
                     }
-                    Some(doc) if doc.children.is_empty() => {
+                    Some(ds) if ds.doc.children.is_empty() => {
                         ui.label(RichText::new("(empty document)").color(Color32::GRAY));
                     }
-                    Some(doc) => {
+                    Some(ds) => {
                         let mut path = Vec::new();
-                        for (i, node) in doc.children.iter().enumerate() {
+                        for (i, node) in ds.doc.children.iter().enumerate() {
                             path.push(i);
                             draw_layer(ui, node, &mut path, &mut self.selection);
                             path.pop();
@@ -87,30 +88,7 @@ impl UiState {
             .resizable(true)
             .default_width(280.0)
             .show(ctx, |ui| {
-                ui.heading("Inspector");
-                ui.separator();
-                ui.label(RichText::new("Nothing selected").color(Color32::GRAY));
-                ui.add_space(12.0);
-                ui.collapsing("Tokens", |ui| match doc {
-                    Some(d) if !d.tokens.is_empty() => {
-                        for (name, value) in &d.tokens.0 {
-                            ui.label(format!("--token-{name}: {value}"));
-                        }
-                    }
-                    _ => {
-                        ui.label(RichText::new("— none —").color(Color32::GRAY));
-                    }
-                });
-                ui.collapsing("Variables", |ui| match doc {
-                    Some(d) if !d.variables.is_empty() => {
-                        for (name, value) in &d.variables.0 {
-                            ui.label(format!("--var-{name}: {value}"));
-                        }
-                    }
-                    _ => {
-                        ui.label(RichText::new("— none —").color(Color32::GRAY));
-                    }
-                });
+                self.draw_inspector(ui, doc_state);
             });
 
         egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
@@ -129,6 +107,237 @@ impl UiState {
                 canvas.ui(ui);
             });
     }
+
+    fn draw_inspector(&self, ui: &mut egui::Ui, doc_state: Option<&mut DocumentState>) {
+        ui.heading("Inspector");
+        ui.separator();
+
+        let Some(ds) = doc_state else {
+            ui.label(RichText::new("Nothing selected").color(Color32::GRAY));
+            return;
+        };
+
+        // Grab rhythm (if any) up-front while borrow is still immutable — the
+        // inspector uses it as the default step for gap/padding pickers.
+        let rhythm_step = ds
+            .doc
+            .variables
+            .get("rhythm")
+            .and_then(|s| {
+                let t = s.trim();
+                let end = t
+                    .find(|c: char| !(c.is_ascii_digit() || c == '.'))
+                    .unwrap_or(t.len());
+                t[..end].parse::<f64>().ok()
+            })
+            .unwrap_or(1.0);
+
+        let selection = self.selection.clone();
+        let Some(path) = selection else {
+            ui.label(RichText::new("Nothing selected").color(Color32::GRAY));
+            draw_tokens_and_variables(ui, &ds.doc);
+            return;
+        };
+
+        let dirty = ds.dirty;
+        let mut became_dirty = false;
+        match ds.doc.node_at_mut(&path) {
+            Some(Node::Frame(frame)) => {
+                ui.label(
+                    RichText::new(format!(
+                        "Frame {}×{}",
+                        frame.width as i64, frame.height as i64
+                    ))
+                    .strong(),
+                );
+                ui.separator();
+                became_dirty |= draw_frame_flex_controls(ui, frame, rhythm_step);
+            }
+            Some(node) => {
+                let id = node.base().id.as_deref().unwrap_or("(no id)");
+                ui.label(format!("{} · {id}", node_kind(node)).to_string());
+                ui.label(RichText::new("No editable properties yet.").color(Color32::GRAY));
+            }
+            None => {
+                ui.label(RichText::new("Selection is stale.").color(Color32::GRAY));
+            }
+        }
+        if became_dirty {
+            ds.dirty = true;
+        }
+        let _ = dirty;
+        draw_tokens_and_variables(ui, &ds.doc);
+    }
+}
+
+fn draw_tokens_and_variables(ui: &mut egui::Ui, doc: &youeye_doc::Document) {
+    ui.add_space(12.0);
+    ui.collapsing("Tokens", |ui| {
+        if doc.tokens.is_empty() {
+            ui.label(RichText::new("— none —").color(Color32::GRAY));
+        } else {
+            for (name, value) in &doc.tokens.0 {
+                ui.label(format!("--token-{name}: {value}"));
+            }
+        }
+    });
+    ui.collapsing("Variables", |ui| {
+        if doc.variables.is_empty() {
+            ui.label(RichText::new("— none —").color(Color32::GRAY));
+        } else {
+            for (name, value) in &doc.variables.0 {
+                ui.label(format!("--var-{name}: {value}"));
+            }
+        }
+    });
+}
+
+/// Renders the flex controls for a Frame. Returns `true` if the user edited
+/// any value this frame.
+fn draw_frame_flex_controls(ui: &mut egui::Ui, frame: &mut Frame, rhythm_step: f64) -> bool {
+    let mut changed = false;
+
+    let is_flex = frame.base.youeye_attrs.get("layout").map(String::as_str) == Some("flex");
+    let mut enabled = is_flex;
+    if ui.checkbox(&mut enabled, "Auto layout (flex)").changed() {
+        if enabled {
+            frame
+                .base
+                .youeye_attrs
+                .insert("layout".into(), "flex".into());
+        } else {
+            frame.base.youeye_attrs.remove("layout");
+        }
+        changed = true;
+    }
+    if !enabled {
+        return changed;
+    }
+
+    changed |= combo(
+        ui,
+        "flex-direction",
+        &mut frame.base.youeye_attrs,
+        "flex-direction",
+        "row",
+        &[
+            ("row", "Row"),
+            ("row-reverse", "Row reverse"),
+            ("column", "Column"),
+            ("column-reverse", "Column reverse"),
+        ],
+    );
+    changed |= combo(
+        ui,
+        "justify",
+        &mut frame.base.youeye_attrs,
+        "justify",
+        "start",
+        &[
+            ("start", "Start"),
+            ("center", "Center"),
+            ("end", "End"),
+            ("space-between", "Space between"),
+            ("space-around", "Space around"),
+            ("space-evenly", "Space evenly"),
+        ],
+    );
+    changed |= combo(
+        ui,
+        "align",
+        &mut frame.base.youeye_attrs,
+        "align",
+        "start",
+        &[
+            ("start", "Start"),
+            ("center", "Center"),
+            ("end", "End"),
+            ("stretch", "Stretch"),
+        ],
+    );
+
+    changed |= length_drag(ui, "gap", &mut frame.base.youeye_attrs, "gap", rhythm_step);
+    changed |= length_drag(
+        ui,
+        "padding",
+        &mut frame.base.youeye_attrs,
+        "padding",
+        rhythm_step,
+    );
+
+    changed
+}
+
+fn combo(
+    ui: &mut egui::Ui,
+    label: &str,
+    attrs: &mut std::collections::BTreeMap<String, String>,
+    key: &str,
+    default: &str,
+    options: &[(&str, &str)],
+) -> bool {
+    let mut changed = false;
+    let current = attrs
+        .get(key)
+        .cloned()
+        .unwrap_or_else(|| default.to_string());
+    ui.horizontal(|ui| {
+        ui.label(label);
+        egui::ComboBox::from_id_salt(label)
+            .selected_text(
+                options
+                    .iter()
+                    .find(|(v, _)| *v == current)
+                    .map(|(_, t)| *t)
+                    .unwrap_or("?"),
+            )
+            .show_ui(ui, |ui| {
+                for (value, text) in options {
+                    if ui.selectable_label(current == *value, *text).clicked() {
+                        attrs.insert(key.into(), (*value).to_string());
+                        changed = true;
+                    }
+                }
+            });
+    });
+    changed
+}
+
+fn length_drag(
+    ui: &mut egui::Ui,
+    label: &str,
+    attrs: &mut std::collections::BTreeMap<String, String>,
+    key: &str,
+    step: f64,
+) -> bool {
+    let mut current: f64 = attrs
+        .get(key)
+        .and_then(|v| {
+            let t = v.trim();
+            let end = t
+                .find(|c: char| !(c.is_ascii_digit() || c == '.' || c == '-'))
+                .unwrap_or(t.len());
+            t[..end].parse::<f64>().ok()
+        })
+        .unwrap_or(0.0);
+    let before = current;
+    ui.horizontal(|ui| {
+        ui.label(label);
+        ui.add(
+            egui::DragValue::new(&mut current)
+                .speed(step)
+                .range(0.0..=f64::MAX),
+        );
+    });
+    if (current - before).abs() > f64::EPSILON {
+        if current == 0.0 {
+            attrs.remove(key);
+        } else {
+            attrs.insert(key.into(), format!("{current}"));
+        }
+        return true;
+    }
+    false
 }
 
 fn draw_layer(
@@ -165,16 +374,20 @@ fn draw_layer(
     }
 }
 
-fn node_label(node: &Node) -> String {
-    let base = node.base();
-    let kind = match node {
+fn node_kind(node: &Node) -> &'static str {
+    match node {
         Node::Group(_) => "Group",
         Node::Frame(_) => "Frame",
         Node::Rect(_) => "Rect",
         Node::Ellipse(_) => "Ellipse",
         Node::Path(_) => "Path",
         Node::Text(_) => "Text",
-    };
+    }
+}
+
+fn node_label(node: &Node) -> String {
+    let base = node.base();
+    let kind = node_kind(node);
     match &base.id {
         Some(id) => format!("{kind} · {id}"),
         None => kind.to_string(),

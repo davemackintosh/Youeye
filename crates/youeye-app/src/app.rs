@@ -174,23 +174,29 @@ impl AppState {
         ui: &mut crate::ui::UiState,
         menu: &mut dyn MenuBar,
         pending_actions: &mut Vec<MenuAction>,
-        doc: Option<&Document>,
+        doc_state: Option<&mut DocumentState>,
     ) -> anyhow::Result<()> {
-        // Render the vello canvas into its offscreen texture first, using the
-        // camera + size the previous frame recorded. egui then samples that
-        // texture when the central panel draws below.
-        if let Err(e) = self
-            .canvas
-            .render(&self.device, &self.queue, &mut self.egui_renderer, doc)
+        // Canvas wants an immutable view of the doc; the inspector may then
+        // mutate it. Take the immutable borrow in a narrow scope so the
+        // mutable one can move into the egui closure afterwards.
         {
-            warn!("canvas render: {e:?}");
+            let canvas_doc: Option<&Document> = doc_state.as_deref().map(|s| &s.doc);
+            if let Err(e) = self.canvas.render(
+                &self.device,
+                &self.queue,
+                &mut self.egui_renderer,
+                canvas_doc,
+            ) {
+                warn!("canvas render: {e:?}");
+            }
         }
 
         let raw_input = self.egui_state.take_egui_input(&*self.window);
         let canvas = &mut self.canvas;
+        let mut doc_state = doc_state;
         let output = self.egui_ctx.clone().run(raw_input, |ctx| {
             menu.draw_egui(ctx, pending_actions);
-            ui.draw(ctx, pending_actions, canvas, doc);
+            ui.draw(ctx, pending_actions, canvas, doc_state.as_deref_mut());
         });
         self.egui_state
             .handle_platform_output(&*self.window, output.platform_output);
@@ -319,8 +325,12 @@ impl ApplicationHandler<UserEvent> for App {
             }
             WindowEvent::RedrawRequested => {
                 let mut actions = Vec::new();
-                let doc = self.doc_state.as_ref().map(|s| &s.doc);
-                if let Err(e) = state.render(&mut self.ui, &mut *self.menu, &mut actions, doc) {
+                if let Err(e) = state.render(
+                    &mut self.ui,
+                    &mut *self.menu,
+                    &mut actions,
+                    self.doc_state.as_mut(),
+                ) {
                     warn!("render error: {e:?}");
                 }
                 self.drain_actions(&actions, event_loop);

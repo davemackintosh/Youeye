@@ -49,6 +49,48 @@ pub struct Document {
     pub raw_style: Option<String>,
 }
 
+impl Document {
+    /// Walk the node tree by child-index path (as used by the selection
+    /// model) and return the node at that location. Returns `None` if the
+    /// path runs off the end of a childless node or out of bounds.
+    pub fn node_at(&self, path: &[usize]) -> Option<&Node> {
+        let (first, rest) = path.split_first()?;
+        let mut node = self.children.get(*first)?;
+        for idx in rest {
+            let children = node_children(node)?;
+            node = children.get(*idx)?;
+        }
+        Some(node)
+    }
+
+    /// Mutable twin of [`node_at`].
+    pub fn node_at_mut(&mut self, path: &[usize]) -> Option<&mut Node> {
+        let (first, rest) = path.split_first()?;
+        let mut node = self.children.get_mut(*first)?;
+        for idx in rest {
+            let children = node_children_mut(node)?;
+            node = children.get_mut(*idx)?;
+        }
+        Some(node)
+    }
+}
+
+fn node_children(node: &Node) -> Option<&Vec<Node>> {
+    match node {
+        Node::Group(g) => Some(&g.children),
+        Node::Frame(f) => Some(&f.children),
+        _ => None,
+    }
+}
+
+fn node_children_mut(node: &mut Node) -> Option<&mut Vec<Node>> {
+    match node {
+        Node::Group(g) => Some(&mut g.children),
+        Node::Frame(f) => Some(&mut f.children),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -117,6 +159,75 @@ mod tests {
         } else {
             panic!("expected Raw");
         }
+    }
+
+    #[test]
+    fn node_at_returns_root_child() {
+        let doc = Document {
+            children: vec![
+                Node::Rect(Rect::default()),
+                Node::Ellipse(Ellipse::default()),
+            ],
+            ..Default::default()
+        };
+        assert!(matches!(doc.node_at(&[0]), Some(Node::Rect(_))));
+        assert!(matches!(doc.node_at(&[1]), Some(Node::Ellipse(_))));
+        assert!(doc.node_at(&[2]).is_none());
+        assert!(doc.node_at(&[]).is_none());
+    }
+
+    #[test]
+    fn node_at_walks_nested_tree() {
+        let inner = Node::Rect(Rect {
+            base: NodeBase {
+                id: Some("inner".into()),
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        let frame = Node::Frame(Frame {
+            children: vec![inner],
+            ..Default::default()
+        });
+        let group = Node::Group(Group {
+            children: vec![frame],
+            ..Default::default()
+        });
+        let doc = Document {
+            children: vec![group],
+            ..Default::default()
+        };
+        let found = doc.node_at(&[0, 0, 0]).unwrap();
+        assert_eq!(found.base().id.as_deref(), Some("inner"));
+    }
+
+    #[test]
+    fn node_at_mut_allows_edits() {
+        let mut doc = Document {
+            children: vec![Node::Frame(Frame::default())],
+            ..Default::default()
+        };
+        let node = doc.node_at_mut(&[0]).unwrap();
+        node.base_mut()
+            .youeye_attrs
+            .insert("layout".into(), "flex".into());
+        assert_eq!(
+            doc.children[0]
+                .base()
+                .youeye_attrs
+                .get("layout")
+                .map(String::as_str),
+            Some("flex")
+        );
+    }
+
+    #[test]
+    fn node_at_stops_at_leaf() {
+        let doc = Document {
+            children: vec![Node::Rect(Rect::default())],
+            ..Default::default()
+        };
+        assert!(doc.node_at(&[0, 0]).is_none());
     }
 
     #[test]

@@ -8,7 +8,7 @@ Last updated: **2026-04-20**.
 
 **Phase 1 — Foundation** ✅ complete.
 **Phase 2 — Document model + SVG round-trip** ✅ complete (slices A, B, C).
-**Phase 3 — Auto-layout (taffy)** 🚧 in progress (slices A+B done, slice C next).
+**Phase 3 — Auto-layout (taffy)** ✅ complete (slices A, B, C).
 
 - 1a — Workspace scaffold, egui + winit + wgpu window with chrome (toolbar, layers, inspector, status bar, menu bar).
 - 1b — Vello canvas with pan/zoom, rendered into an offscreen `Rgba8Unorm` texture registered as an egui native texture.
@@ -99,10 +99,11 @@ Sliced A/B/C like phase 2. **Decision:** Frame is a nested `<svg>` on wire — i
 - Per-child flex overrides (`flex-grow`, `flex-shrink`, `align-self`, `flex-basis`) still deferred.
 - 9 layout unit tests + 3 existing scene tests; render suite 12 passing.
 
-**Slice C (next)** — Inspector write-back.
-- Flex controls in the right panel when a Frame is selected.
-- Introduces `&mut Document` plumbing through `ui.draw` — first UI-driven state mutation.
-- Gap/padding picker: default step = `--var-rhythm` if present, else fallback.
+**Slice C ✅** — Inspector write-back.
+- `Document::node_at` / `node_at_mut` path-based lookup (4 new tests).
+- `ui.draw` and `state.render` now take `Option<&mut DocumentState>`. Canvas still gets `&Document` via an inner scope that releases the immutable borrow before the egui closure captures the mutable one (`Option::as_deref_mut()` inside the FnMut closure).
+- Inspector renders flex controls when the selection is a Frame: "Auto layout (flex)" toggle, direction / justify / align combos, gap / padding DragValues. Gap/padding DragValue step defaults to `--var-rhythm` when present, else `1.0`. Writes update `frame.base.youeye_attrs` and mark the doc dirty.
+- Inspector also shows tokens/variables for the current doc regardless of selection.
 
 ### Phase 4 — Tokens + variables UI with enforcement
 
