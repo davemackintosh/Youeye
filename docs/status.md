@@ -2,14 +2,18 @@
 
 Running log of where the project is and what's next. Update after each working session so any machine (or a fresh Claude session) can pick up cold.
 
-Last updated: **2026-04-19**.
+Last updated: **2026-04-20**.
 
 ## Current phase
 
 **Phase 1 — Foundation** ✅ complete.
+**Phase 2 — Document model + SVG round-trip** 🚧 in progress (slices A+B landed, slice C next).
 
 - 1a — Workspace scaffold, egui + winit + wgpu window with chrome (toolbar, layers, inspector, status bar, menu bar).
 - 1b — Vello canvas with pan/zoom, rendered into an offscreen `Rgba8Unorm` texture registered as an egui native texture.
+- 1c — wgpu device limits: request `adapter.limits()` (not `downlevel_defaults`) so Retina-class surfaces and vello's compute shader (5 storage buffers) are supported.
+- 2A — `youeye-doc`: `Node` enum (Group/Frame/Rect/Ellipse/Path/Text) with `NodeBase` carrying id, `kurbo::Affine`, fill/stroke, `youeye_attrs`, `extra_attrs`. `Document` with `ViewBox`, tokens, variables, `raw_style`. 8 unit tests.
+- 2B — `youeye-io`: SVG parser + serializer (`quick-xml` 0.39). **Canonical** round-trip — first save normalises (sorted attrs, 2-space indent, `\n`, CDATA-wrapped style, self-closing empties); every subsequent load+save is byte-identical. `<style>` content round-trips verbatim via `Document.raw_style`; tokens/variables are a read-only view extracted from `:root` declarations. Unknown attrs preserved in `extra_attrs`. 13 unit tests.
 
 ## How to run
 
@@ -55,15 +59,25 @@ Tasks are tracked in-session with the task tool — not durable across machines.
 
 ### Phase 2 — Document model + SVG round-trip
 
-1. **`youeye-doc`: node types mirroring SVG.** Group, Rect, Ellipse, Path, Text, Frame. Each node carries an id, a `kurbo::Affine` transform, fill/stroke, and a `youeye:` attribute bag for non-SVG extensions (`layout`, `override-*`, `type="ruler"`, etc).
-2. **`youeye-doc`: tokens + variables.** Parse the SVG `<style>` root for `--token-*` / `--var-*` custom properties. Treat them as a first-class dictionary in the model so the inspector can list / enforce them.
-3. **`youeye-io`: SVG parser.** Two paths:
-   - *Own SVG:* preserve every `youeye:*` attribute and all CSS custom properties verbatim. Round-trip must be byte-exact on a no-op load+save.
-   - *Foreign SVG:* best-effort via `usvg` as reference; flatten to raw shapes.
-4. **`youeye-io`: SVG serializer.** `\n` line endings. Sorted attributes for deterministic diffs. Pretty-printed.
+Sliced A/B/C for tractable commits. **Round-trip policy: canonical**, not strict byte-exact — first save normalises, subsequent load+save is byte-stable.
+
+**Slice A ✅** — `youeye-doc` types.
+1. **`youeye-doc`: node types mirroring SVG.** ✅ Group, Rect, Ellipse, Path, Text, Frame. Each carries an id, `kurbo::Affine` transform, fill/stroke, `youeye_attrs`, and `extra_attrs` for unknown-attribute preservation.
+2. **`youeye-doc`: tokens + variables.** ✅ `Tokens` / `Variables` as `BTreeMap<String, String>` (bare names, prefix stripped). Parsing lives in `youeye-io`; here they're typed dictionaries.
+
+**Slice B ✅** — `youeye-io` parse + serialize.
+3. **`youeye-io`: SVG parser.** ✅ `quick-xml` 0.39-based. Preserves unknown attrs into `extra_attrs`. Routes `youeye:*` into `youeye_attrs`. Captures `<style>` text verbatim into `Document.raw_style`; extracts `--token-*`/`--var-*` out of any `:root` blocks for the inspector view. Foreign SVG via `usvg` is a later entry point, not wired yet.
+4. **`youeye-io`: SVG serializer.** ✅ `\n`, 2-space indent, sorted attrs, self-closing empties, `<?xml ...?>` declaration, CDATA-wrapped `<style>`. Default `xmlns`/`xmlns:youeye` auto-added when missing. 13 round-trip/unit tests.
+
+**Slice C (next)** — wire-up.
 5. **`youeye-app`: project I/O.** Folder-as-project (`project.yeye.json` + `screens/*.svg` + `components.svg` + `assets/`). Hook into File > New / Open / Save menu actions.
 6. **`youeye-app`: layers panel.** Bind to the current screen's node tree; selection, rename, reorder, visibility toggle, lock.
 7. **`youeye-render`: scene builder.** Walk the doc tree, emit a `vello::Scene`. Replace the hardcoded test content in `canvas.rs::build_scene`.
+
+**Known slice-B scope deferrals (pick up before slice C or as needed):**
+- `Frame` node type parses as `Node::Group` for now. Serializer emits `Frame` as `<g>` plus `youeye:frame="true"` + `youeye:{x,y,width,height}` — a placeholder until Phase 3's auto-layout code decides the canonical encoding (candidates: nested `<svg>` vs `<g>` + namespaced attrs).
+- `transform=""` attrs are preserved as raw strings in `extra_attrs` and re-emitted unchanged. Typed `NodeBase.transform: kurbo::Affine` is populated to IDENTITY on parse; the editor will populate it from manipulation and serializer falls back to `extra_attrs["transform"]` when Affine is identity.
+- Paint parsing covers `none`, `#rgb/#rrggbb/#rrggbbaa`, `rgb(...)`/`rgba(...)`. Named colours (`red`, `currentColor`), gradients, `url(#id)`, `var(--token-...)` pass through as `Paint::Raw(verbatim)`.
 
 ### Phase 3 — Auto-layout (taffy)
 

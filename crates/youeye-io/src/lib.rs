@@ -1,9 +1,13 @@
 //! SVG import/export and project folder I/O.
 //!
-//! - Our own SVGs round-trip perfectly (all `youeye:*` preserved).
-//! - Foreign SVGs: best-effort via `usvg`, flattened into raw shapes.
-//!
-//! Phase 1: placeholder.
+//! - Our own SVGs round-trip canonically (first save normalises; every
+//!   subsequent load+save is byte-identical).
+//! - Foreign SVG best-effort import via `usvg` is a separate entry point for
+//!   a later phase.
+
+pub mod svg;
+
+pub use svg::{from_svg, to_svg};
 
 /// Standard line ending used when serialising SVG on disk.
 ///

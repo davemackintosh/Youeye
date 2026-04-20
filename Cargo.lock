@@ -4119,6 +4119,7 @@ dependencies = [
 name = "youeye-doc"
 version = "0.1.0"
 dependencies = [
+ "kurbo",
  "thiserror 2.0.18",
 ]
 
@@ -4127,6 +4128,7 @@ name = "youeye-io"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "quick-xml",
  "thiserror 2.0.18",
  "youeye-doc",
 ]
