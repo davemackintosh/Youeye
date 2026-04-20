@@ -5,15 +5,17 @@
 //! elements, `<?xml ...?>` declaration). Every subsequent load+save of that
 //! output is byte-identical.
 //!
-//! Non-goals for this slice:
+//! Non-goals for this module:
 //! - Parsing `transform=""` values into `kurbo::Affine` — the original string
 //!   is preserved in `extra_attrs["transform"]` and re-emitted verbatim.
-//! - Mapping `<g>` to `Frame`. Everything that's a group in SVG parses to
-//!   `Node::Group` regardless of auto-layout hints; the `Frame` variant is
-//!   there for Phase 3 to wire up.
 //! - Foreign SVG normalization via `usvg`. This module only handles the
 //!   youeye dialect; foreign-SVG best-effort import is a separate entry
 //!   point in a later phase.
+//!
+//! Frame ↔ nested `<svg>` mapping: a non-root `<svg>` element is parsed as
+//! `Node::Frame` (its own viewport with clipping and local coords). `<g>`
+//! stays as `Node::Group` — it's a pure grouping wrapper with no layout
+//! semantics of its own.
 
 use std::collections::BTreeMap;
 
@@ -23,8 +25,8 @@ use quick_xml::escape::unescape;
 use quick_xml::events::{BytesStart, Event};
 use youeye_doc::kurbo;
 use youeye_doc::{
-    Color, Document, Ellipse, Fill, Group, Node, NodeBase, Paint, Path, Rect, Stroke, Text, Tokens,
-    Variables, ViewBox,
+    Color, Document, Ellipse, Fill, Frame, Group, Node, NodeBase, Paint, Path, Rect, Stroke, Text,
+    Tokens, Variables, ViewBox,
 };
 
 use crate::LINE_ENDING;
@@ -153,6 +155,27 @@ fn parse_children(
                         parse_children(reader, &mut children, &mut nested_style, b"g")?;
                         out.push(Node::Group(Group { base, children }));
                     }
+                    b"svg" => {
+                        // Nested <svg> is the on-wire form of a Frame: its own
+                        // viewport, clipping, and local coordinate space for
+                        // children.
+                        let x = parse_f64(base.extra_attrs.get("x")).unwrap_or(0.0);
+                        let y = parse_f64(base.extra_attrs.get("y")).unwrap_or(0.0);
+                        let width = parse_f64(base.extra_attrs.get("width")).unwrap_or(0.0);
+                        let height = parse_f64(base.extra_attrs.get("height")).unwrap_or(0.0);
+                        let base = strip_shape_attrs(base, &["x", "y", "width", "height"]);
+                        let mut children = Vec::new();
+                        let mut nested_style: Option<String> = None;
+                        parse_children(reader, &mut children, &mut nested_style, b"svg")?;
+                        out.push(Node::Frame(Frame {
+                            base,
+                            x,
+                            y,
+                            width,
+                            height,
+                            children,
+                        }));
+                    }
                     b"text" => {
                         let (x, y) = take_xy(&base);
                         let (font_family, font_size) = take_font(&base);
@@ -221,6 +244,22 @@ fn parse_children(
                         // Empty self-closing group — rare, but legal.
                         out.push(Node::Group(Group {
                             base,
+                            children: Vec::new(),
+                        }));
+                    }
+                    b"svg" => {
+                        // Empty nested <svg /> — an empty Frame.
+                        let x = parse_f64(base.extra_attrs.get("x")).unwrap_or(0.0);
+                        let y = parse_f64(base.extra_attrs.get("y")).unwrap_or(0.0);
+                        let width = parse_f64(base.extra_attrs.get("width")).unwrap_or(0.0);
+                        let height = parse_f64(base.extra_attrs.get("height")).unwrap_or(0.0);
+                        let base = strip_shape_attrs(base, &["x", "y", "width", "height"]);
+                        out.push(Node::Frame(Frame {
+                            base,
+                            x,
+                            y,
+                            width,
+                            height,
                             children: Vec::new(),
                         }));
                     }
@@ -516,22 +555,24 @@ fn write_node(out: &mut String, depth: usize, node: &Node) {
             }
         }
         Node::Frame(f) => {
-            // Frame is serialised as a plain <g> plus youeye namespace attrs
-            // until Phase 3 wires up a dedicated representation.
+            // A Frame serialises as a nested <svg>: that's a proper SVG
+            // viewport with its own coordinate space and clipping, so
+            // foreign renderers show children clipped to the frame bounds
+            // and in local coords. No youeye:type marker needed — any
+            // nested <svg> is a Frame by definition.
             let mut attrs = attrs_for_base(&f.base);
-            attrs.insert("youeye:frame".into(), "true".into());
-            attrs.insert("youeye:x".into(), fmt_num(f.x));
-            attrs.insert("youeye:y".into(), fmt_num(f.y));
-            attrs.insert("youeye:width".into(), fmt_num(f.width));
-            attrs.insert("youeye:height".into(), fmt_num(f.height));
+            attrs.insert("x".into(), fmt_num(f.x));
+            attrs.insert("y".into(), fmt_num(f.y));
+            attrs.insert("width".into(), fmt_num(f.width));
+            attrs.insert("height".into(), fmt_num(f.height));
             if f.children.is_empty() {
-                write_open_tag(out, depth, "g", &attrs, true);
+                write_open_tag(out, depth, "svg", &attrs, true);
             } else {
-                write_open_tag(out, depth, "g", &attrs, false);
+                write_open_tag(out, depth, "svg", &attrs, false);
                 for c in &f.children {
                     write_node(out, depth + 1, c);
                 }
-                write_close_tag(out, depth, "g");
+                write_close_tag(out, depth, "svg");
             }
         }
         Node::Rect(r) => {
@@ -729,7 +770,7 @@ fn has_any_youeye_usage(doc: &Document) -> bool {
         }
         match n {
             Node::Group(g) => g.children.iter().any(walk),
-            Node::Frame(_) => true,
+            Node::Frame(f) => f.children.iter().any(walk),
             _ => false,
         }
     }
@@ -886,5 +927,98 @@ mod tests {
     fn paint_unknown_is_raw() {
         let p = parse_paint("var(--token-brand)");
         assert_eq!(p, Paint::Raw("var(--token-brand)".into()));
+    }
+
+    #[test]
+    fn nested_svg_parses_as_frame() {
+        let input = r##"<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg">
+  <svg x="10" y="20" width="300" height="200">
+    <rect x="0" y="0" width="50" height="50"/>
+  </svg>
+</svg>"##;
+        let doc = from_svg(input).unwrap();
+        assert_eq!(doc.children.len(), 1);
+        match &doc.children[0] {
+            Node::Frame(f) => {
+                assert_eq!(f.x, 10.0);
+                assert_eq!(f.y, 20.0);
+                assert_eq!(f.width, 300.0);
+                assert_eq!(f.height, 200.0);
+                assert_eq!(f.children.len(), 1);
+                matches!(&f.children[0], Node::Rect(_));
+            }
+            other => panic!("expected a Frame, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn frame_round_trips() {
+        let input = r##"<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg">
+  <svg height="200" width="300" x="10" y="20">
+    <rect height="50" width="50" x="0" y="0"/>
+  </svg>
+</svg>"##;
+        let out = assert_canonical_stable(input);
+        assert!(out.contains(r#"<svg height="200" width="300" x="10" y="20">"#));
+    }
+
+    #[test]
+    fn empty_frame_self_closes() {
+        let input = r##"<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg"><svg height="100" width="100" x="0" y="0"/></svg>"##;
+        let out = assert_canonical_stable(input);
+        assert!(out.contains(r#"<svg height="100" width="100" x="0" y="0"/>"#));
+    }
+
+    #[test]
+    fn frame_preserves_flex_layout_attrs() {
+        let input = r##"<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:youeye="https://youeye.app/ns">
+  <svg height="200" width="300" x="0" y="0" youeye:flex-direction="row" youeye:gap="8" youeye:layout="flex" youeye:padding="16">
+    <rect height="50" width="50" x="0" y="0"/>
+  </svg>
+</svg>"##;
+        let doc = from_svg(input).unwrap();
+        let frame = match &doc.children[0] {
+            Node::Frame(f) => f,
+            _ => panic!("expected Frame"),
+        };
+        assert_eq!(
+            frame.base.youeye_attrs.get("layout").map(String::as_str),
+            Some("flex")
+        );
+        assert_eq!(
+            frame
+                .base
+                .youeye_attrs
+                .get("flex-direction")
+                .map(String::as_str),
+            Some("row")
+        );
+        assert_eq!(
+            frame.base.youeye_attrs.get("gap").map(String::as_str),
+            Some("8")
+        );
+        assert_eq!(
+            frame.base.youeye_attrs.get("padding").map(String::as_str),
+            Some("16")
+        );
+
+        assert_canonical_stable(input);
+    }
+
+    #[test]
+    fn nested_frames_round_trip() {
+        let input = r##"<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg">
+  <svg height="400" width="400" x="0" y="0">
+    <svg height="100" width="100" x="10" y="10">
+      <rect height="50" width="50" x="0" y="0"/>
+    </svg>
+  </svg>
+</svg>"##;
+        let _ = assert_canonical_stable(input);
     }
 }

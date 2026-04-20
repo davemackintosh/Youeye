@@ -8,6 +8,7 @@ Last updated: **2026-04-20**.
 
 **Phase 1 — Foundation** ✅ complete.
 **Phase 2 — Document model + SVG round-trip** ✅ complete (slices A, B, C).
+**Phase 3 — Auto-layout (taffy)** 🚧 in progress (slice A done, slices B+C next).
 
 - 1a — Workspace scaffold, egui + winit + wgpu window with chrome (toolbar, layers, inspector, status bar, menu bar).
 - 1b — Vello canvas with pan/zoom, rendered into an offscreen `Rgba8Unorm` texture registered as an egui native texture.
@@ -82,9 +83,24 @@ Sliced A/B/C for tractable commits. **Round-trip policy: canonical**, not strict
 
 ### Phase 3 — Auto-layout (taffy)
 
-- Integrate `taffy` for frame nodes. Flex direction / gap / padding / justify / align UI.
-- Store as `youeye:layout="flex"` + related namespaced attrs.
-- Inspector UI: auto-layout controls for Frame nodes, with gap/padding pickers that default to rhythm multiples.
+Sliced A/B/C like phase 2. **Decision:** Frame is a nested `<svg>` on wire — its own viewport, native clipping, local coordinate space for children. Foreign renderers display children clipped to the frame bounds automatically. No `youeye:type` marker needed; any non-root `<svg>` is a Frame.
+
+**Slice A ✅** — Frame SVG representation.
+- Parser: non-root `<svg>` → `Node::Frame`; `x`/`y`/`width`/`height` extracted to typed fields, `youeye:*` flows into `youeye_attrs`. Empty `<svg />` supported.
+- Serializer: Frame → `<svg x=".." y=".." width=".." height="..">`; flex-layout metadata rides through as `youeye:*`.
+- 5 new tests: parse, round-trip, empty frame, flex-attr preservation, nested frames. Full io suite: 18 tests.
+
+**Slice B (next)** — Taffy integration.
+- Add `taffy` dep.
+- Scene builder: when a Frame has `youeye:layout="flex"`, build a taffy tree from its children, run compute, offset each child by taffy's computed `(x, y)` before recursing.
+- Read `youeye:flex-direction` / `justify` / `align` / `gap` / `padding` off the Frame's `youeye_attrs`.
+- Per-child overrides (`flex-grow`, `align-self`) come later.
+- Drive via SVG input for now; no UI editing yet.
+
+**Slice C** — Inspector write-back.
+- Flex controls in the right panel when a Frame is selected.
+- Introduces `&mut Document` plumbing through `ui.draw` — first UI-driven state mutation.
+- Gap/padding picker: default step = `--var-rhythm` if present, else fallback.
 
 ### Phase 4 — Tokens + variables UI with enforcement
 
