@@ -38,6 +38,7 @@ pub enum Node {
     Ellipse(Ellipse),
     Path(Path),
     Text(Text),
+    Ruler(Ruler),
 }
 
 impl Node {
@@ -49,6 +50,7 @@ impl Node {
             Node::Ellipse(n) => &n.base,
             Node::Path(n) => &n.base,
             Node::Text(n) => &n.base,
+            Node::Ruler(n) => &n.base,
         }
     }
 
@@ -60,6 +62,7 @@ impl Node {
             Node::Ellipse(n) => &mut n.base,
             Node::Path(n) => &mut n.base,
             Node::Text(n) => &mut n.base,
+            Node::Ruler(n) => &mut n.base,
         }
     }
 }
@@ -114,4 +117,33 @@ pub struct Text {
     pub content: String,
     pub font_family: Option<String>,
     pub font_size: Option<f64>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum RulerOrientation {
+    #[default]
+    Horizontal,
+    Vertical,
+}
+
+impl RulerOrientation {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            RulerOrientation::Horizontal => "horizontal",
+            RulerOrientation::Vertical => "vertical",
+        }
+    }
+}
+
+/// A design ruler — a named construction line used to pin shapes and
+/// measure spacing. Rulers are part of the document (not editor chrome) but
+/// carry `style="display:none"` so foreign SVG renderers skip them.
+#[derive(Debug, Clone, Default)]
+pub struct Ruler {
+    pub base: NodeBase,
+    pub orientation: RulerOrientation,
+    /// Coordinate along the ruler's short axis, in the parent's coordinate
+    /// space. For a horizontal ruler this is the `y` value the line sits at;
+    /// for vertical it's the `x` value.
+    pub position: f64,
 }

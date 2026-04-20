@@ -10,13 +10,17 @@
 //! "off-token" warning UI can surface it, but we don't want misleading
 //! visuals on the canvas.
 
-use kurbo::{Affine, Ellipse as KEllipse, Rect as KRect, Shape, Stroke as KStroke, Vec2};
+use kurbo::{
+    Affine, Ellipse as KEllipse, Line as KLine, Point, Rect as KRect, Shape, Stroke as KStroke,
+    Vec2,
+};
 use vello::Scene;
 use vello::peniko::color::{AlphaColor, Srgb};
 use vello::peniko::{Brush, Fill as VelloFill};
 
-use youeye_doc::{Color, Document, Node, NodeBase, Paint};
+use youeye_doc::{Color, Document, Node, NodeBase, Paint, Ruler, RulerOrientation};
 
+use crate::constraints::{self, RulerScope};
 use crate::layout;
 
 /// Append draw commands for `doc` to `scene`, composed under `root_xform`.
@@ -24,32 +28,74 @@ use crate::layout;
 /// The caller decides what `root_xform` means — typically a camera transform
 /// (translate + scale) composed with any view-level adjustments.
 pub fn build(scene: &mut Scene, doc: &Document, root_xform: Affine) {
+    let root_bounds = doc
+        .view_box
+        .map(|vb| {
+            KRect::new(
+                vb.min_x,
+                vb.min_y,
+                vb.min_x + vb.width,
+                vb.min_y + vb.height,
+            )
+        })
+        .unwrap_or_else(|| KRect::new(-10_000.0, -10_000.0, 10_000.0, 10_000.0));
+    let root_scope = constraints::extend_scope(
+        &RulerScope::new(),
+        constraints::collect_rulers(&doc.children),
+    );
     for node in &doc.children {
-        render_node(scene, node, root_xform);
+        render_node(scene, node, root_xform, root_bounds, &root_scope);
     }
 }
 
-fn render_node(scene: &mut Scene, node: &Node, parent_xform: Affine) {
-    let xform = parent_xform * node.base().transform;
+fn render_node(
+    scene: &mut Scene,
+    node: &Node,
+    parent_xform: Affine,
+    parent_bounds: KRect,
+    scope: &RulerScope<'_>,
+) {
+    let base_xform = parent_xform * node.base().transform;
+    // Apply any pin-to-ruler translation before drawing. Containers don't
+    // currently get pinned (their children do), but it's harmless to try.
+    let xform = match constraints::resolve_pin_translate(node, scope) {
+        Some(shift) => base_xform * Affine::translate(shift),
+        None => base_xform,
+    };
     match node {
         Node::Group(g) => {
+            let child_scope =
+                constraints::extend_scope(scope, constraints::collect_rulers(&g.children));
             for c in &g.children {
-                render_node(scene, c, xform);
+                render_node(scene, c, xform, parent_bounds, &child_scope);
             }
         }
         Node::Frame(f) => {
             let local = xform * Affine::translate(Vec2::new(f.x, f.y));
+            let bounds = KRect::new(0.0, 0.0, f.width, f.height);
+            let child_scope =
+                constraints::extend_scope(scope, constraints::collect_rulers(&f.children));
             match layout::compute_flex_positions(f) {
                 Some(positions) => {
                     for (child, placed) in f.children.iter().zip(positions.iter()) {
-                        let shift = placed.top_left - layout::authored_top_left(child);
-                        let child_xform = local * Affine::translate(shift);
-                        render_node(scene, child, child_xform);
+                        match (child, placed) {
+                            (Node::Ruler(_), _) => {
+                                render_node(scene, child, local, bounds, &child_scope);
+                            }
+                            (_, Some(layout_pos)) => {
+                                let shift = layout_pos.top_left - layout::authored_top_left(child);
+                                let child_xform = local * Affine::translate(shift);
+                                render_node(scene, child, child_xform, bounds, &child_scope);
+                            }
+                            (_, None) => {
+                                render_node(scene, child, local, bounds, &child_scope);
+                            }
+                        }
                     }
                 }
                 None => {
                     for c in &f.children {
-                        render_node(scene, c, local);
+                        render_node(scene, c, local, bounds, &child_scope);
                     }
                 }
             }
@@ -68,7 +114,28 @@ fn render_node(scene: &mut Scene, node: &Node, parent_xform: Affine) {
         Node::Text(_) => {
             // Deferred to phase 8 (parley).
         }
+        Node::Ruler(r) => {
+            render_ruler(scene, r, xform, parent_bounds);
+        }
     }
+}
+
+fn render_ruler(scene: &mut Scene, ruler: &Ruler, xform: Affine, bounds: KRect) {
+    let brush = Brush::Solid(AlphaColor::<Srgb>::from_rgba8(0xff, 0x57, 0x22, 0xc0));
+    let mut stroke = KStroke::new(1.0);
+    stroke.dash_pattern.push(6.0);
+    stroke.dash_pattern.push(4.0);
+    let line = match ruler.orientation {
+        RulerOrientation::Horizontal => KLine::new(
+            Point::new(bounds.x0, ruler.position),
+            Point::new(bounds.x1, ruler.position),
+        ),
+        RulerOrientation::Vertical => KLine::new(
+            Point::new(ruler.position, bounds.y0),
+            Point::new(ruler.position, bounds.y1),
+        ),
+    };
+    scene.stroke(&stroke, xform, &brush, None, &line);
 }
 
 fn paint_shape(scene: &mut Scene, shape: &impl Shape, base: &NodeBase, xform: Affine) {

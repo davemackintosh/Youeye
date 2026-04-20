@@ -22,11 +22,11 @@ pub struct ChildLayout {
     pub top_left: Vec2,
 }
 
-/// Returns `Some(positions)` — one per child in order — when `frame` carries
-/// `youeye:layout="flex"`. Returns `None` when the frame is not auto-laid-out,
-/// in which case the scene builder should render children at their authored
-/// positions.
-pub fn compute_flex_positions(frame: &Frame) -> Option<Vec<ChildLayout>> {
+/// Returns `Some(positions)` with one slot per child in `frame.children`
+/// order when `frame` carries `youeye:layout="flex"`. Rulers get `None`
+/// because they're layout metadata, not flex participants. Returns `None`
+/// overall when the frame is not auto-laid-out.
+pub fn compute_flex_positions(frame: &Frame) -> Option<Vec<Option<ChildLayout>>> {
     if frame.base.youeye_attrs.get("layout").map(String::as_str) != Some("flex") {
         return None;
     }
@@ -59,8 +59,13 @@ pub fn compute_flex_positions(frame: &Frame) -> Option<Vec<ChildLayout>> {
         ..Default::default()
     };
 
-    let mut child_ids = Vec::with_capacity(frame.children.len());
+    let mut taffy_ids: Vec<Option<NodeId>> = Vec::with_capacity(frame.children.len());
+    let mut flex_children: Vec<NodeId> = Vec::new();
     for child in &frame.children {
+        if matches!(child, Node::Ruler(_)) {
+            taffy_ids.push(None);
+            continue;
+        }
         let (w, h) = child_size(child);
         let style = Style {
             size: Size {
@@ -69,10 +74,12 @@ pub fn compute_flex_positions(frame: &Frame) -> Option<Vec<ChildLayout>> {
             },
             ..Default::default()
         };
-        child_ids.push(taffy.new_leaf(style).ok()?);
+        let id = taffy.new_leaf(style).ok()?;
+        flex_children.push(id);
+        taffy_ids.push(Some(id));
     }
 
-    let root = taffy.new_with_children(root_style, &child_ids).ok()?;
+    let root = taffy.new_with_children(root_style, &flex_children).ok()?;
     taffy
         .compute_layout(
             root,
@@ -83,11 +90,16 @@ pub fn compute_flex_positions(frame: &Frame) -> Option<Vec<ChildLayout>> {
         )
         .ok()?;
 
-    let mut out = Vec::with_capacity(child_ids.len());
-    for id in &child_ids {
-        let layout = taffy.layout(*id).ok()?;
-        out.push(ChildLayout {
-            top_left: Vec2::new(layout.location.x as f64, layout.location.y as f64),
+    let mut out = Vec::with_capacity(taffy_ids.len());
+    for id in &taffy_ids {
+        out.push(match id {
+            Some(id) => {
+                let layout = taffy.layout(*id).ok()?;
+                Some(ChildLayout {
+                    top_left: Vec2::new(layout.location.x as f64, layout.location.y as f64),
+                })
+            }
+            None => None,
         });
     }
     Some(out)
@@ -105,7 +117,7 @@ pub fn authored_top_left(node: &Node) -> Vec2 {
             let b = p.data.bounding_box();
             Vec2::new(b.x0, b.y0)
         }
-        Node::Group(_) | Node::Text(_) => Vec2::ZERO,
+        Node::Group(_) | Node::Text(_) | Node::Ruler(_) => Vec2::ZERO,
     }
 }
 
@@ -120,7 +132,7 @@ fn child_size(node: &Node) -> (f64, f64) {
         }
         // Groups and text without parley lack a reliable intrinsic size; they
         // contribute 0x0 to the flex layout. Good enough until phase 8.
-        Node::Group(_) | Node::Text(_) => (0.0, 0.0),
+        Node::Group(_) | Node::Text(_) | Node::Ruler(_) => (0.0, 0.0),
     }
 }
 
@@ -218,8 +230,8 @@ mod tests {
         let frame = flex_frame(300.0, 100.0, &[], vec![rect(50.0, 50.0), rect(50.0, 50.0)]);
         let positions = compute_flex_positions(&frame).expect("flex positions");
         assert_eq!(positions.len(), 2);
-        assert_eq!(positions[0].top_left, Vec2::new(0.0, 0.0));
-        assert_eq!(positions[1].top_left, Vec2::new(50.0, 0.0));
+        assert_eq!(positions[0].unwrap().top_left, Vec2::new(0.0, 0.0));
+        assert_eq!(positions[1].unwrap().top_left, Vec2::new(50.0, 0.0));
     }
 
     #[test]
@@ -231,8 +243,8 @@ mod tests {
             vec![rect(50.0, 50.0), rect(50.0, 50.0)],
         );
         let p = compute_flex_positions(&frame).unwrap();
-        assert_eq!(p[0].top_left.x, 0.0);
-        assert_eq!(p[1].top_left.x, 60.0);
+        assert_eq!(p[0].unwrap().top_left.x, 0.0);
+        assert_eq!(p[1].unwrap().top_left.x, 60.0);
     }
 
     #[test]
@@ -244,15 +256,15 @@ mod tests {
             vec![rect(50.0, 40.0), rect(50.0, 40.0)],
         );
         let p = compute_flex_positions(&frame).unwrap();
-        assert_eq!(p[0].top_left, Vec2::new(0.0, 0.0));
-        assert_eq!(p[1].top_left, Vec2::new(0.0, 40.0));
+        assert_eq!(p[0].unwrap().top_left, Vec2::new(0.0, 0.0));
+        assert_eq!(p[1].unwrap().top_left, Vec2::new(0.0, 40.0));
     }
 
     #[test]
     fn padding_pushes_first_child() {
         let frame = flex_frame(300.0, 100.0, &[("padding", "16")], vec![rect(50.0, 50.0)]);
         let p = compute_flex_positions(&frame).unwrap();
-        assert_eq!(p[0].top_left, Vec2::new(16.0, 16.0));
+        assert_eq!(p[0].unwrap().top_left, Vec2::new(16.0, 16.0));
     }
 
     #[test]
@@ -264,7 +276,7 @@ mod tests {
             vec![rect(50.0, 50.0)],
         );
         let p = compute_flex_positions(&frame).unwrap();
-        assert_eq!(p[0].top_left.x, 75.0);
+        assert_eq!(p[0].unwrap().top_left.x, 75.0);
     }
 
     #[test]
@@ -276,15 +288,15 @@ mod tests {
             vec![rect(50.0, 50.0), rect(50.0, 50.0)],
         );
         let p = compute_flex_positions(&frame).unwrap();
-        assert_eq!(p[0].top_left.x, 0.0);
-        assert_eq!(p[1].top_left.x, 250.0);
+        assert_eq!(p[0].unwrap().top_left.x, 0.0);
+        assert_eq!(p[1].unwrap().top_left.x, 250.0);
     }
 
     #[test]
     fn align_center_centers_children_on_cross_axis() {
         let frame = flex_frame(300.0, 100.0, &[("align", "center")], vec![rect(50.0, 40.0)]);
         let p = compute_flex_positions(&frame).unwrap();
-        assert_eq!(p[0].top_left.y, 30.0);
+        assert_eq!(p[0].unwrap().top_left.y, 30.0);
     }
 
     #[test]
@@ -299,6 +311,6 @@ mod tests {
             vec![rect(50.0, 50.0), rect(50.0, 50.0)],
         );
         let p = compute_flex_positions(&frame).unwrap();
-        assert_eq!(p[1].top_left.x, 50.0);
+        assert_eq!(p[1].unwrap().top_left.x, 50.0);
     }
 }

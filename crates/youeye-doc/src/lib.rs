@@ -12,7 +12,7 @@ pub mod node;
 pub mod style;
 pub mod tokens;
 
-pub use node::{Ellipse, Frame, Group, Node, NodeBase, Path, Rect, Text};
+pub use node::{Ellipse, Frame, Group, Node, NodeBase, Path, Rect, Ruler, RulerOrientation, Text};
 pub use style::{Color, Fill, Paint, Stroke};
 pub use tokens::{Tokens, Variables};
 

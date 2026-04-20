@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 
 use egui::{Color32, RichText};
-use youeye_doc::{Color, Fill, Frame, Node, Paint, Stroke};
+use youeye_doc::{Color, Fill, Frame, Node, Paint, Ruler, RulerOrientation, Stroke};
 
 use crate::app::DocumentState;
 use crate::canvas::Canvas;
@@ -147,6 +147,17 @@ impl UiState {
         };
 
         let token_names: Vec<String> = ds.doc.tokens.0.keys().cloned().collect();
+        let rulers_in_scope = collect_rulers_in_scope(&ds.doc, &path);
+        let v_ruler_ids: Vec<String> = rulers_in_scope
+            .iter()
+            .filter(|(_, o)| *o == RulerOrientation::Vertical)
+            .map(|(id, _)| id.clone())
+            .collect();
+        let h_ruler_ids: Vec<String> = rulers_in_scope
+            .iter()
+            .filter(|(_, o)| *o == RulerOrientation::Horizontal)
+            .map(|(id, _)| id.clone())
+            .collect();
         match ds.doc.node_at_mut(&path) {
             Some(Node::Frame(frame)) => {
                 ui.label(
@@ -168,6 +179,8 @@ impl UiState {
                 let base = node.base_mut();
                 became_dirty |= draw_fill_row(ui, &mut base.fill, &token_names);
                 became_dirty |= draw_stroke_row(ui, &mut base.stroke, &token_names);
+                became_dirty |=
+                    draw_pins_section(ui, &mut base.youeye_attrs, &v_ruler_ids, &h_ruler_ids);
             }
             Some(node) => {
                 let id = node.base().id.as_deref().unwrap_or("(no id)");
@@ -305,6 +318,7 @@ fn draw_frame_flex_controls(ui: &mut egui::Ui, frame: &mut Frame, rhythm_step: f
         changed = true;
     }
     if !enabled {
+        changed |= draw_rulers_section(ui, &mut frame.children);
         return changed;
     }
 
@@ -359,6 +373,56 @@ fn draw_frame_flex_controls(ui: &mut egui::Ui, frame: &mut Frame, rhythm_step: f
         rhythm_step,
     );
 
+    changed |= draw_rulers_section(ui, &mut frame.children);
+    changed
+}
+
+fn draw_rulers_section(ui: &mut egui::Ui, children: &mut Vec<Node>) -> bool {
+    let mut changed = false;
+    ui.add_space(12.0);
+    ui.collapsing("Rulers", |ui| {
+        let mut delete_indices: Vec<usize> = Vec::new();
+        for (i, child) in children.iter_mut().enumerate() {
+            if let Node::Ruler(r) = child {
+                ui.horizontal(|ui| {
+                    let label = match r.orientation {
+                        RulerOrientation::Horizontal => "H",
+                        RulerOrientation::Vertical => "V",
+                    };
+                    ui.label(label);
+                    if ui
+                        .add(egui::DragValue::new(&mut r.position).speed(1.0))
+                        .changed()
+                    {
+                        changed = true;
+                    }
+                    if ui.small_button("×").on_hover_text("Delete").clicked() {
+                        delete_indices.push(i);
+                    }
+                });
+            }
+        }
+        for i in delete_indices.into_iter().rev() {
+            children.remove(i);
+            changed = true;
+        }
+        ui.horizontal(|ui| {
+            if ui.button("Add horizontal ruler").clicked() {
+                children.push(Node::Ruler(Ruler {
+                    orientation: RulerOrientation::Horizontal,
+                    ..Default::default()
+                }));
+                changed = true;
+            }
+            if ui.button("Add vertical ruler").clicked() {
+                children.push(Node::Ruler(Ruler {
+                    orientation: RulerOrientation::Vertical,
+                    ..Default::default()
+                }));
+                changed = true;
+            }
+        });
+    });
     changed
 }
 
@@ -477,6 +541,7 @@ fn node_kind(node: &Node) -> &'static str {
         Node::Ellipse(_) => "Ellipse",
         Node::Path(_) => "Path",
         Node::Text(_) => "Text",
+        Node::Ruler(_) => "Ruler",
     }
 }
 
@@ -491,6 +556,103 @@ fn node_label(node: &Node) -> String {
 
 fn supports_paint(node: &Node) -> bool {
     matches!(node, Node::Rect(_) | Node::Ellipse(_) | Node::Path(_))
+}
+
+/// Walk from the document root to (but not into) the selected node, picking
+/// up every ruler declared as a direct child of any ancestor. Inner
+/// declarations shadow outer ones with the same id.
+fn collect_rulers_in_scope(
+    doc: &youeye_doc::Document,
+    path: &[usize],
+) -> Vec<(String, RulerOrientation)> {
+    let mut out: BTreeMap<String, RulerOrientation> = BTreeMap::new();
+    let mut collect = |children: &[Node]| {
+        for c in children {
+            if let Node::Ruler(r) = c
+                && let Some(id) = &r.base.id
+            {
+                out.insert(id.clone(), r.orientation);
+            }
+        }
+    };
+
+    collect(&doc.children);
+    let mut children = &doc.children;
+    // Walk ancestors — everything up to but not including the selected node.
+    let ancestor_count = path.len().saturating_sub(1);
+    for idx in &path[..ancestor_count] {
+        let Some(node) = children.get(*idx) else {
+            break;
+        };
+        let next = match node {
+            Node::Group(g) => Some(&g.children),
+            Node::Frame(f) => Some(&f.children),
+            _ => None,
+        };
+        if let Some(next) = next {
+            children = next;
+            collect(next);
+        } else {
+            break;
+        }
+    }
+    out.into_iter().collect()
+}
+
+fn draw_pins_section(
+    ui: &mut egui::Ui,
+    attrs: &mut BTreeMap<String, String>,
+    v_ruler_ids: &[String],
+    h_ruler_ids: &[String],
+) -> bool {
+    let mut changed = false;
+    if v_ruler_ids.is_empty() && h_ruler_ids.is_empty() {
+        return changed;
+    }
+    ui.add_space(12.0);
+    ui.collapsing("Pin to rulers", |ui| {
+        changed |= draw_pin_row(ui, "Left", attrs, "pin-left", v_ruler_ids);
+        changed |= draw_pin_row(ui, "Right", attrs, "pin-right", v_ruler_ids);
+        changed |= draw_pin_row(ui, "Top", attrs, "pin-top", h_ruler_ids);
+        changed |= draw_pin_row(ui, "Bottom", attrs, "pin-bottom", h_ruler_ids);
+    });
+    changed
+}
+
+fn draw_pin_row(
+    ui: &mut egui::Ui,
+    label: &str,
+    attrs: &mut BTreeMap<String, String>,
+    key: &str,
+    ruler_ids: &[String],
+) -> bool {
+    let mut changed = false;
+    let current = attrs.get(key).cloned().unwrap_or_default();
+    ui.horizontal(|ui| {
+        ui.label(label);
+        egui::ComboBox::from_id_salt(key)
+            .selected_text(if current.is_empty() {
+                "(none)".to_string()
+            } else {
+                current.clone()
+            })
+            .show_ui(ui, |ui| {
+                if ui.selectable_label(current.is_empty(), "(none)").clicked() {
+                    attrs.remove(key);
+                    changed = true;
+                }
+                if ruler_ids.is_empty() {
+                    ui.label(RichText::new("no rulers").color(Color32::GRAY));
+                }
+                for id in ruler_ids {
+                    if ui.selectable_label(current == *id, id).clicked() {
+                        attrs.insert(key.into(), id.clone());
+                        changed = true;
+                    }
+                }
+            });
+    });
+    changed
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -25,8 +25,8 @@ use quick_xml::escape::unescape;
 use quick_xml::events::{BytesStart, Event};
 use youeye_doc::kurbo;
 use youeye_doc::{
-    Color, Document, Ellipse, Fill, Frame, Group, Node, NodeBase, Paint, Path, Rect, Stroke, Text,
-    Tokens, Variables, ViewBox,
+    Color, Document, Ellipse, Fill, Frame, Group, Node, NodeBase, Paint, Path, Rect, Ruler,
+    RulerOrientation, Stroke, Text, Tokens, Variables, ViewBox,
 };
 
 use crate::LINE_ENDING;
@@ -292,6 +292,34 @@ fn parse_children(
                         out.push(Node::Path(Path {
                             base: strip_shape_attrs(base, &["d"]),
                             data,
+                        }));
+                    }
+                    b"line"
+                        if base.youeye_attrs.get("type").map(String::as_str) == Some("ruler") =>
+                    {
+                        let orientation =
+                            match base.youeye_attrs.get("orientation").map(String::as_str) {
+                                Some("vertical") => RulerOrientation::Vertical,
+                                _ => RulerOrientation::Horizontal,
+                            };
+                        let position = base
+                            .youeye_attrs
+                            .get("position")
+                            .and_then(|s| s.parse::<f64>().ok())
+                            .unwrap_or(0.0);
+                        // Drop the coordinate attrs on the line — the typed
+                        // Ruler fields are authoritative. `style="display:none"`
+                        // and the `type` / `orientation` / `position`
+                        // youeye attrs are re-emitted by the serializer.
+                        let mut base = strip_shape_attrs(base, &["x1", "y1", "x2", "y2"]);
+                        base.extra_attrs.remove("style");
+                        base.youeye_attrs.remove("type");
+                        base.youeye_attrs.remove("orientation");
+                        base.youeye_attrs.remove("position");
+                        out.push(Node::Ruler(Ruler {
+                            base,
+                            orientation,
+                            position,
                         }));
                     }
                     b"g" => {
@@ -701,6 +729,33 @@ fn write_node(out: &mut String, depth: usize, node: &Node) {
             out.push_str("</text>");
             out.push_str(LINE_ENDING);
         }
+        Node::Ruler(r) => {
+            let mut attrs = attrs_for_base(&r.base);
+            // Huge dummy line bounds — the ruler's real extent comes from its
+            // youeye:orientation/position and is resolved relative to the
+            // parent at render time. `display:none` means foreign renderers
+            // don't see them anyway.
+            const SPAN: f64 = 1_000_000.0;
+            match r.orientation {
+                RulerOrientation::Horizontal => {
+                    attrs.insert("x1".into(), fmt_num(-SPAN));
+                    attrs.insert("x2".into(), fmt_num(SPAN));
+                    attrs.insert("y1".into(), fmt_num(r.position));
+                    attrs.insert("y2".into(), fmt_num(r.position));
+                }
+                RulerOrientation::Vertical => {
+                    attrs.insert("x1".into(), fmt_num(r.position));
+                    attrs.insert("x2".into(), fmt_num(r.position));
+                    attrs.insert("y1".into(), fmt_num(-SPAN));
+                    attrs.insert("y2".into(), fmt_num(SPAN));
+                }
+            }
+            attrs.insert("style".into(), "display:none".into());
+            attrs.insert("youeye:type".into(), "ruler".into());
+            attrs.insert("youeye:orientation".into(), r.orientation.as_str().into());
+            attrs.insert("youeye:position".into(), fmt_num(r.position));
+            write_open_tag(out, depth, "line", &attrs, true);
+        }
     }
 }
 
@@ -851,6 +906,7 @@ fn has_any_youeye_usage(doc: &Document) -> bool {
         match n {
             Node::Group(g) => g.children.iter().any(walk),
             Node::Frame(f) => f.children.iter().any(walk),
+            Node::Ruler(_) => true,
             _ => false,
         }
     }
@@ -1153,6 +1209,55 @@ mod tests {
         );
 
         assert_canonical_stable(input);
+    }
+
+    #[test]
+    fn ruler_parses_from_line_marker() {
+        let input = r##"<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:youeye="https://youeye.app/ns">
+  <line x1="-1000000" y1="120" x2="1000000" y2="120" style="display:none" youeye:type="ruler" youeye:orientation="horizontal" youeye:position="120"/>
+</svg>"##;
+        let doc = from_svg(input).unwrap();
+        assert_eq!(doc.children.len(), 1);
+        match &doc.children[0] {
+            Node::Ruler(r) => {
+                assert_eq!(r.orientation, RulerOrientation::Horizontal);
+                assert_eq!(r.position, 120.0);
+            }
+            other => panic!("expected Ruler, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn ruler_round_trips_canonically() {
+        let input = r##"<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:youeye="https://youeye.app/ns">
+  <line style="display:none" x1="-1000000" x2="1000000" y1="120" y2="120" youeye:orientation="horizontal" youeye:position="120" youeye:type="ruler"/>
+</svg>"##;
+        let out = assert_canonical_stable(input);
+        assert!(out.contains(r#"youeye:type="ruler""#));
+        assert!(out.contains(r#"youeye:position="120""#));
+        assert!(out.contains(r#"style="display:none""#));
+    }
+
+    #[test]
+    fn vertical_ruler_round_trips() {
+        let input = r##"<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:youeye="https://youeye.app/ns"><line style="display:none" x1="80" x2="80" y1="-1000000" y2="1000000" youeye:orientation="vertical" youeye:position="80" youeye:type="ruler"/></svg>"##;
+        let _ = assert_canonical_stable(input);
+    }
+
+    #[test]
+    fn ruler_inside_frame_round_trips() {
+        let input = r##"<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg" xmlns:youeye="https://youeye.app/ns">
+  <svg height="400" width="320" x="0" y="0">
+    <line style="display:none" x1="-1000000" x2="1000000" y1="44" y2="44" youeye:orientation="horizontal" youeye:position="44" youeye:type="ruler"/>
+    <rect height="50" width="50" x="0" y="0"/>
+  </svg>
+</svg>"##;
+        let out = assert_canonical_stable(input);
+        assert!(out.contains(r#"youeye:position="44""#));
     }
 
     #[test]

@@ -10,6 +10,7 @@ Last updated: **2026-04-20**.
 **Phase 2 — Document model + SVG round-trip** ✅ complete (slices A, B, C).
 **Phase 3 — Auto-layout (taffy)** ✅ complete (slices A, B, C).
 **Phase 4 — Tokens + variables UI with enforcement** 🚧 slices A+B+C done, D deferred.
+**Phase 5 — Rulers + constraints** ✅ core done (pin solver deferred to direct-math; kasuari upgrade pending real multi-constraint scenarios).
 
 - 1a — Workspace scaffold, egui + winit + wgpu window with chrome (toolbar, layers, inspector, status bar, menu bar).
 - 1b — Vello canvas with pan/zoom, rendered into an offscreen `Rgba8Unorm` texture registered as an egui native texture.
@@ -130,12 +131,32 @@ Sliced A/B/C like phase 2. **Decision:** Frame is a nested `<svg>` on wire — i
 **Slice D** (deferred) — Mode switcher.
 - `@media (prefers-color-scheme: dark)` and class modifiers (`.mode-compact { ... }`) — needs CSS context evaluation and mode-aware token/variable lookup. Defer until there's a concrete use case.
 
-### Phase 5 — Rulers + constraints (kiwi)
+### Phase 5 — Rulers + constraints
 
-- Ruler as a node type, rendered as `<line youeye:type="ruler" style="display:none">` in SVG.
-- Hierarchical: rulers can live at any level, scoped to their parent frame.
-- Integrate `kiwi` (Cassowary port). Layout pipeline: taffy first, then kiwi on non-flex elements.
-- UI to create rulers (new tool? keyboard shortcut?) and to define constraints between elements and rulers.
+**Slice A ✅** — Ruler node + I/O.
+- `Node::Ruler { base, orientation, position }` added. Orientation enum: Horizontal | Vertical.
+- Parser: `<line youeye:type="ruler" youeye:orientation="..." youeye:position="..." style="display:none"/>` → `Node::Ruler`. Non-ruler `<line>` elements still bail.
+- Serializer: emits huge dummy `x1/y1/x2/y2` (±1M) so foreign renderers with `display:none` stripped still show nothing weird; the typed `position` is authoritative.
+- 4 round-trip tests (horizontal, vertical, nested-in-frame, multi-attr).
+
+**Slice B ✅** — Render rulers as dashed guides in the editor.
+- Scene builder passes `parent_bounds` down during recursion. Rulers render as dashed 1px orange lines across the containing bounds.
+- Rulers excluded from taffy flex layout (zero-size slots were unacceptable — they interfered with gap spacing). `compute_flex_positions` returns `Vec<Option<ChildLayout>>` with `None` for rulers.
+- Scene builder iterates child/position pairs and routes rulers through the "render regardless of layout" path.
+
+**Slice C ✅** — Ruler management UI in inspector.
+- When a Frame is selected: "Rulers" collapsing section. Lists existing child rulers with orientation label + position DragValue + delete. "Add horizontal/vertical ruler" buttons.
+- New rulers created without an id — users pick an id in a future pass or reference them externally (the id lives in `NodeBase.id` via the id field at the Rect/Ellipse/Path level — Ruler id editing UI could come later).
+
+**Slice D ✅** — Pin-to-ruler constraints + inspector UI.
+- Shapes carrying `youeye:pin-{left,right,top,bottom}="ruler-id"` get their corresponding edge snapped to the referenced ruler at render time.
+- Ruler scoping: walk up the tree. Inner rulers shadow outer ones with the same id.
+- Scene builder maintains a `RulerScope` during recursion. `constraints::resolve_pin_translate` returns the translation that places the pinned edge(s) on the ruler(s).
+- Inspector: "Pin to rulers" section on Rect/Ellipse/Path selections. Four rows (left/right/top/bottom) each with a dropdown of rulers in scope (filtered by orientation). `(none)` option clears.
+- Scope deferral: single-edge only. Both pin-left AND pin-right = pin-left wins; no stretching yet. Pin to wrong-orientation ruler silently no-ops.
+- 6 constraint tests cover no-pins, pin-left, pin-right (width-subtracted), pin-top, orientation mismatch, inner-shadow.
+
+**Solver deferral:** the Cassowary-shaped constraint solver (`kasuari` / `cassowary-rs`) isn't wired up yet — direct math handles single-edge pins fine and the additional complexity only pays off when ruler-to-ruler or stretching constraints arrive.
 
 ### Phase 6 — Primitive tools
 
