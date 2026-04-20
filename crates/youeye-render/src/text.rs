@@ -27,6 +27,24 @@ thread_local! {
     static LAYOUT_CTX: RefCell<LayoutContext<()>> = RefCell::new(LayoutContext::new());
 }
 
+/// Enumerate the font family names known to the local fontique collection.
+/// Sorted and de-duplicated. Intended for populating font-picker UI;
+/// callers should cache the result — this walks every installed family
+/// name from scratch each call.
+pub fn list_font_families() -> Vec<String> {
+    FONT_CTX.with(|fcx| {
+        let mut fcx = fcx.borrow_mut();
+        let mut names: Vec<String> = fcx
+            .collection
+            .family_names()
+            .map(|s| s.to_string())
+            .collect();
+        names.sort_by(|a, b| a.to_ascii_lowercase().cmp(&b.to_ascii_lowercase()));
+        names.dedup();
+        names
+    })
+}
+
 pub fn draw_text(scene: &mut Scene, text: &Text, xform: Affine, doc: &Document) {
     if text.content.is_empty() {
         return;

@@ -17,6 +17,12 @@ pub struct UiState {
     /// inspector treats as the active target. Operations that don't need a
     /// single target (delete, drag-move) act on all entries.
     pub selection: Vec<Vec<usize>>,
+    /// System font family names, populated on first Text inspector draw.
+    /// Lazy because enumerating fonts hits the OS font DB.
+    font_families: Option<Vec<String>>,
+    /// When set, the next frame asks egui to focus the Text content field.
+    /// Used by the canvas to hand over focus on a double-click.
+    pending_text_focus: bool,
 }
 
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
@@ -196,20 +202,31 @@ impl UiState {
 
         let tool = self.selected_tool;
         let mut canvas_dirty = false;
+        let mut focus_text_content = false;
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE)
             .show(ctx, |ui| {
                 let doc_for_canvas = doc_state.as_deref_mut().map(|s| &mut s.doc);
-                if canvas.ui(ui, doc_for_canvas, &mut self.selection, tool) {
+                if canvas.ui(
+                    ui,
+                    doc_for_canvas,
+                    &mut self.selection,
+                    tool,
+                    &mut focus_text_content,
+                ) {
                     canvas_dirty = true;
                 }
             });
+        if focus_text_content {
+            self.pending_text_focus = true;
+            ctx.request_repaint();
+        }
         if canvas_dirty && let Some(ds) = doc_state.as_deref_mut() {
             ds.dirty = true;
         }
     }
 
-    fn draw_inspector(&self, ui: &mut egui::Ui, doc_state: Option<&mut DocumentState>) {
+    fn draw_inspector(&mut self, ui: &mut egui::Ui, doc_state: Option<&mut DocumentState>) {
         ui.heading("Inspector");
         ui.separator();
 
@@ -267,6 +284,12 @@ impl UiState {
 
         let token_names: Vec<String> = ds.doc.tokens.0.keys().cloned().collect();
         let rulers_in_scope = collect_rulers_in_scope(&ds.doc, &path);
+        // Populate the font list lazily — first time we need it.
+        if self.font_families.is_none() {
+            self.font_families = Some(youeye_render::text::list_font_families());
+        }
+        let font_families: Vec<String> = self.font_families.clone().unwrap_or_default();
+        let focus_text_content = std::mem::take(&mut self.pending_text_focus);
         let v_ruler_ids: Vec<String> = rulers_in_scope
             .iter()
             .filter(|(_, o)| *o == RulerOrientation::Vertical)
@@ -294,7 +317,8 @@ impl UiState {
                 let id_str = id.as_deref().unwrap_or("(no id)");
                 ui.label(RichText::new(format!("Text · {id_str}")).strong());
                 ui.separator();
-                became_dirty |= draw_text_controls(ui, text, &token_names);
+                became_dirty |=
+                    draw_text_controls(ui, text, &token_names, &font_families, focus_text_content);
             }
             Some(node) if supports_paint(node) => {
                 let kind = node_kind(node);
@@ -955,21 +979,26 @@ fn draw_text_controls(
     ui: &mut egui::Ui,
     text: &mut youeye_doc::Text,
     token_names: &[String],
+    font_families: &[String],
+    focus_content: bool,
 ) -> bool {
     let mut changed = false;
 
     ui.horizontal(|ui| {
         ui.label("Content");
     });
-    if ui
-        .add(
-            egui::TextEdit::multiline(&mut text.content)
-                .desired_rows(2)
-                .desired_width(f32::INFINITY),
-        )
-        .changed()
-    {
+    let content_id = egui::Id::new("inspector-text-content");
+    let content_response = ui.add(
+        egui::TextEdit::multiline(&mut text.content)
+            .id(content_id)
+            .desired_rows(2)
+            .desired_width(f32::INFINITY),
+    );
+    if content_response.changed() {
         changed = true;
+    }
+    if focus_content {
+        content_response.request_focus();
     }
 
     ui.add_space(6.0);
@@ -1002,6 +1031,35 @@ fn draw_text_controls(
 
     ui.horizontal(|ui| {
         ui.label("Family");
+        let current = text.font_family.clone().unwrap_or_default();
+        let label = if current.is_empty() {
+            "(system default)".to_string()
+        } else {
+            current.clone()
+        };
+        egui::ComboBox::from_id_salt("text-font-family")
+            .selected_text(label)
+            .width(160.0)
+            .show_ui(ui, |ui| {
+                if ui
+                    .selectable_label(current.is_empty(), "(system default)")
+                    .clicked()
+                {
+                    text.font_family = None;
+                    changed = true;
+                }
+                for family in font_families {
+                    if ui.selectable_label(current == *family, family).clicked() {
+                        text.font_family = Some(family.clone());
+                        changed = true;
+                    }
+                }
+            });
+    });
+    // Free-text fallback — handy for fonts the system hasn't scanned or
+    // when the user wants a specific CSS-style stack string.
+    ui.horizontal(|ui| {
+        ui.label("  custom");
         let mut family = text.font_family.clone().unwrap_or_default();
         let response = ui.add(egui::TextEdit::singleline(&mut family).desired_width(140.0));
         if response.changed() {

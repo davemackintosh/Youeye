@@ -206,6 +206,7 @@ impl Canvas {
         doc: Option<&mut Document>,
         selection: &mut Vec<Vec<usize>>,
         tool: Tool,
+        focus_text_content: &mut bool,
     ) -> bool {
         let rect = ui.available_rect_before_wrap();
         let ppp = ui.ctx().pixels_per_point();
@@ -243,6 +244,18 @@ impl Canvas {
             let d = response.drag_delta();
             self.camera.translate += Vec2::new(d.x as f64, d.y as f64);
         } else {
+            // Double-click on a Text node with Select tool → select it and
+            // signal the inspector to grab focus on the content field.
+            if response.double_clicked_by(egui::PointerButton::Primary)
+                && tool == Tool::Select
+                && let Some(world) = pointer_world
+                && let Some(doc_ref) = doc.as_deref()
+                && let Some(path) = hit_test(doc_ref, world)
+                && matches!(doc_ref.node_at(&path), Some(Node::Text(_)))
+            {
+                *selection = vec![path];
+                *focus_text_content = true;
+            }
             mutated |= self.handle_tool_interaction(
                 &response,
                 pointer_world,
