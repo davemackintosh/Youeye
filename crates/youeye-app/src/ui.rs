@@ -3,7 +3,7 @@
 use std::collections::BTreeMap;
 
 use egui::{Color32, RichText};
-use youeye_doc::{Frame, Node};
+use youeye_doc::{Color, Fill, Frame, Node, Paint, Stroke};
 
 use crate::app::DocumentState;
 use crate::canvas::Canvas;
@@ -146,6 +146,7 @@ impl UiState {
             return;
         };
 
+        let token_names: Vec<String> = ds.doc.tokens.0.keys().cloned().collect();
         match ds.doc.node_at_mut(&path) {
             Some(Node::Frame(frame)) => {
                 ui.label(
@@ -158,9 +159,19 @@ impl UiState {
                 ui.separator();
                 became_dirty |= draw_frame_flex_controls(ui, frame, rhythm_step);
             }
+            Some(node) if supports_paint(node) => {
+                let kind = node_kind(node);
+                let id = node.base().id.clone();
+                let id_str = id.as_deref().unwrap_or("(no id)");
+                ui.label(RichText::new(format!("{kind} · {id_str}")).strong());
+                ui.separator();
+                let base = node.base_mut();
+                became_dirty |= draw_fill_row(ui, &mut base.fill, &token_names);
+                became_dirty |= draw_stroke_row(ui, &mut base.stroke, &token_names);
+            }
             Some(node) => {
                 let id = node.base().id.as_deref().unwrap_or("(no id)");
-                ui.label(format!("{} · {id}", node_kind(node)).to_string());
+                ui.label(format!("{} · {id}", node_kind(node)));
                 ui.label(RichText::new("No editable properties yet.").color(Color32::GRAY));
             }
             None => {
@@ -411,6 +422,7 @@ fn length_drag(
                 .speed(step)
                 .range(0.0..=f64::MAX),
         );
+        off_rhythm_chip(ui, current, step);
     });
     if (current - before).abs() > f64::EPSILON {
         if current == 0.0 {
@@ -475,4 +487,219 @@ fn node_label(node: &Node) -> String {
         Some(id) => format!("{kind} · {id}"),
         None => kind.to_string(),
     }
+}
+
+fn supports_paint(node: &Node) -> bool {
+    matches!(node, Node::Rect(_) | Node::Ellipse(_) | Node::Path(_))
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum PaintKind {
+    None,
+    Color,
+    Token,
+    Raw,
+}
+
+fn draw_fill_row(ui: &mut egui::Ui, fill: &mut Option<Fill>, tokens: &[String]) -> bool {
+    let mut changed = false;
+    ui.horizontal(|ui| {
+        ui.label("Fill");
+        let paint = fill_paint_mut(fill);
+        changed |= paint_picker(ui, "fill", paint, tokens);
+        off_token_chip(ui, paint, tokens);
+    });
+    changed
+}
+
+fn draw_stroke_row(ui: &mut egui::Ui, stroke: &mut Option<Stroke>, tokens: &[String]) -> bool {
+    let mut changed = false;
+    ui.horizontal(|ui| {
+        ui.label("Stroke");
+        let paint = stroke_paint_mut(stroke);
+        changed |= paint_picker(ui, "stroke", paint, tokens);
+        off_token_chip(ui, paint, tokens);
+    });
+    // Width control — only meaningful when stroke is not None.
+    if let Some(s) = stroke.as_mut()
+        && !matches!(s.paint, Paint::None)
+    {
+        ui.horizontal(|ui| {
+            ui.label("  width");
+            let mut w = s.width.unwrap_or(1.0);
+            if ui
+                .add(
+                    egui::DragValue::new(&mut w)
+                        .speed(0.1)
+                        .range(0.0..=f64::MAX),
+                )
+                .changed()
+            {
+                s.width = Some(w);
+                changed = true;
+            }
+        });
+    }
+    changed
+}
+
+/// Returns a `&mut Paint` view of a `Fill`, creating a default `Fill` with
+/// `Paint::None` if the option was `None`.
+fn fill_paint_mut(fill: &mut Option<Fill>) -> &mut Paint {
+    if fill.is_none() {
+        *fill = Some(Fill::default());
+    }
+    &mut fill.as_mut().unwrap().paint
+}
+
+fn stroke_paint_mut(stroke: &mut Option<Stroke>) -> &mut Paint {
+    if stroke.is_none() {
+        *stroke = Some(Stroke::default());
+    }
+    &mut stroke.as_mut().unwrap().paint
+}
+
+fn paint_picker(ui: &mut egui::Ui, salt: &str, paint: &mut Paint, tokens: &[String]) -> bool {
+    let mut changed = false;
+
+    let current_kind = classify_paint(paint);
+    let mut new_kind = current_kind;
+
+    egui::ComboBox::from_id_salt(format!("{salt}-kind"))
+        .selected_text(paint_kind_label(current_kind))
+        .show_ui(ui, |ui| {
+            ui.selectable_value(&mut new_kind, PaintKind::None, "none");
+            ui.selectable_value(&mut new_kind, PaintKind::Color, "color");
+            if !tokens.is_empty() {
+                ui.selectable_value(&mut new_kind, PaintKind::Token, "token");
+            }
+            ui.selectable_value(&mut new_kind, PaintKind::Raw, "raw");
+        });
+
+    if new_kind != current_kind {
+        *paint = default_paint_for_kind(new_kind, tokens);
+        changed = true;
+    }
+
+    match paint {
+        Paint::None => {}
+        Paint::Solid(color) => {
+            let mut rgba = [color.r, color.g, color.b, color.a];
+            if ui.color_edit_button_rgba_unmultiplied(&mut rgba).changed() {
+                color.r = rgba[0];
+                color.g = rgba[1];
+                color.b = rgba[2];
+                color.a = rgba[3];
+                changed = true;
+            }
+        }
+        Paint::Raw(s) if is_token_ref(s) => {
+            let current = extract_token_name(s).unwrap_or_default();
+            egui::ComboBox::from_id_salt(format!("{salt}-token"))
+                .selected_text(if current.is_empty() {
+                    "(pick)".to_string()
+                } else {
+                    current.clone()
+                })
+                .show_ui(ui, |ui| {
+                    for t in tokens {
+                        if ui.selectable_label(current == *t, t).clicked() {
+                            *s = format!("var(--token-{t})");
+                            changed = true;
+                        }
+                    }
+                });
+        }
+        Paint::Raw(s) => {
+            if ui
+                .add(egui::TextEdit::singleline(s).desired_width(140.0))
+                .changed()
+            {
+                changed = true;
+            }
+        }
+    }
+    changed
+}
+
+fn classify_paint(paint: &Paint) -> PaintKind {
+    match paint {
+        Paint::None => PaintKind::None,
+        Paint::Solid(_) => PaintKind::Color,
+        Paint::Raw(s) if is_token_ref(s) => PaintKind::Token,
+        Paint::Raw(_) => PaintKind::Raw,
+    }
+}
+
+fn paint_kind_label(k: PaintKind) -> &'static str {
+    match k {
+        PaintKind::None => "none",
+        PaintKind::Color => "color",
+        PaintKind::Token => "token",
+        PaintKind::Raw => "raw",
+    }
+}
+
+fn default_paint_for_kind(kind: PaintKind, tokens: &[String]) -> Paint {
+    match kind {
+        PaintKind::None => Paint::None,
+        PaintKind::Color => Paint::Solid(Color::BLACK),
+        PaintKind::Token => match tokens.first() {
+            Some(t) => Paint::Raw(format!("var(--token-{t})")),
+            None => Paint::None,
+        },
+        PaintKind::Raw => Paint::Raw(String::new()),
+    }
+}
+
+fn is_token_ref(s: &str) -> bool {
+    let t = s.trim();
+    t.starts_with("var(--token-") && t.ends_with(')')
+}
+
+/// Show a small amber "off-token" chip when the paint is a raw value and the
+/// document declares at least one token. Non-enforcing — purely visual
+/// guidance. Empty when there are no tokens yet (the design system hasn't
+/// been set up) or the paint is none.
+fn off_token_chip(ui: &mut egui::Ui, paint: &Paint, tokens: &[String]) {
+    if tokens.is_empty() {
+        return;
+    }
+    let off =
+        matches!(paint, Paint::Solid(_)) || matches!(paint, Paint::Raw(s) if !is_token_ref(s));
+    if off {
+        ui.label(
+            RichText::new("off-token")
+                .color(Color32::from_rgb(0xdd, 0xa0, 0x30))
+                .small(),
+        )
+        .on_hover_text("Raw value — consider binding this to a token.");
+    }
+}
+
+/// Off-rhythm chip for gap/padding style lengths. Shown when the document
+/// declares `--var-rhythm` and the current value isn't an integer multiple
+/// of that rhythm.
+fn off_rhythm_chip(ui: &mut egui::Ui, value: f64, rhythm_step: f64) {
+    if rhythm_step <= 1.0 {
+        return; // No meaningful rhythm to measure against.
+    }
+    let ratio = value / rhythm_step;
+    let snapped = ratio.round() * rhythm_step;
+    if (value - snapped).abs() > 0.001 {
+        ui.label(
+            RichText::new("off-rhythm")
+                .color(Color32::from_rgb(0xdd, 0xa0, 0x30))
+                .small(),
+        )
+        .on_hover_text(format!(
+            "Not a multiple of --var-rhythm ({rhythm_step}). Nearest: {snapped}."
+        ));
+    }
+}
+
+fn extract_token_name(s: &str) -> Option<String> {
+    let t = s.trim();
+    let inner = t.strip_prefix("var(--token-")?.strip_suffix(')')?;
+    Some(inner.to_string())
 }

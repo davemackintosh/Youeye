@@ -9,7 +9,7 @@ Last updated: **2026-04-20**.
 **Phase 1 — Foundation** ✅ complete.
 **Phase 2 — Document model + SVG round-trip** ✅ complete (slices A, B, C).
 **Phase 3 — Auto-layout (taffy)** ✅ complete (slices A, B, C).
-**Phase 4 — Tokens + variables UI with enforcement** 🚧 in progress (slice A done; B/C/D next).
+**Phase 4 — Tokens + variables UI with enforcement** 🚧 slices A+B+C done, D deferred.
 
 - 1a — Workspace scaffold, egui + winit + wgpu window with chrome (toolbar, layers, inspector, status bar, menu bar).
 - 1b — Vello canvas with pan/zoom, rendered into an offscreen `Rgba8Unorm` texture registered as an egui native texture.
@@ -115,12 +115,17 @@ Sliced A/B/C like phase 2. **Decision:** Frame is a nested `<svg>` on wire — i
 - Inspector: tokens/variables panels are now editable — rename, change value, delete, add. Shared `draw_dict_editor` helper used for both. Changes mark doc dirty.
 - 4 new io tests (extra-preserved alongside tokens, extra-only, editing-reflects-in-output, and the existing split tests).
 
-**Slice B (next)** — Token-first pickers.
-- Fill/stroke pickers in the inspector gain a mode: pick a token (dropdown of available token names), pick a raw colour, or type a raw value. Editing writes `Paint::Raw("var(--token-xxx)")` for token bindings.
-- Skip font picker (needs parley).
+**Slice B ✅** — Token-first pickers.
+- Rect/Ellipse/Path selections now show Fill and Stroke pickers in the inspector. Each picker offers modes: `none` / `color` / `token` / `raw`.
+- `color` uses egui's `color_edit_button_rgba_unmultiplied` on the typed `Color { r, g, b, a: f32 }`.
+- `token` shows a dropdown of `--token-*` names; picking writes `Paint::Raw("var(--token-xxx)")`.
+- `raw` is a plain text field — for named colours, `url(#grad1)`, or anything not yet typed.
+- Stroke gains a width DragValue when paint isn't `none`.
 
-**Slice C** — Off-token chip.
-- Inspector surfaces a small "off-token" / "off-rhythm" warning on raw values when tokens exist and the node uses a raw colour or non-rhythm spacing. Non-enforcing — guide, don't gatekeep.
+**Slice C ✅** — Off-token / off-rhythm chips.
+- Small amber "off-token" label next to fill/stroke when the doc has tokens but the paint is raw.
+- "off-rhythm" label next to gap/padding when the doc has `--var-rhythm` and the current value isn't a rhythm multiple. Tooltip suggests the nearest rhythm-aligned value.
+- Non-enforcing; design is "guide, don't gatekeep."
 
 **Slice D** (deferred) — Mode switcher.
 - `@media (prefers-color-scheme: dark)` and class modifiers (`.mode-compact { ... }`) — needs CSS context evaluation and mode-aware token/variable lookup. Defer until there's a concrete use case.
