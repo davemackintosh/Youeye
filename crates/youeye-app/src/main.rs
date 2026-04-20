@@ -7,6 +7,7 @@ mod menu_linux;
 mod menu_native;
 mod modifiers;
 mod paths;
+mod recents;
 mod ui;
 
 use anyhow::Result;

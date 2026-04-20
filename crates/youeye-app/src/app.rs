@@ -41,7 +41,7 @@ impl App {
             proxy,
             menu: menu::create(),
             state: None,
-            ui: crate::ui::UiState::default(),
+            ui: crate::ui::UiState::new(),
             doc_state: None,
         }
     }

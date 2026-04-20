@@ -120,6 +120,16 @@ pub enum Tool {
 }
 
 impl UiState {
+    /// Construct the initial UiState for a fresh launch. Seeds
+    /// `recent_colors` from the persistent palette on disk so the user's
+    /// previous session's swatches are available immediately.
+    pub fn new() -> Self {
+        Self {
+            recent_colors: crate::recents::load(),
+            ..Self::default()
+        }
+    }
+
     pub fn draw(
         &mut self,
         ctx: &egui::Context,
@@ -128,6 +138,7 @@ impl UiState {
         doc_state: Option<&mut DocumentState>,
     ) {
         let mut doc_state = doc_state;
+        let recents_before = self.recent_colors.clone();
 
         // Global keyboard shortcuts. Skip when an egui text input has focus
         // so typing "r" in a field doesn't switch tools.
@@ -355,6 +366,13 @@ impl UiState {
         }
         if canvas_dirty && let Some(ds) = doc_state.as_deref_mut() {
             ds.dirty = true;
+        }
+
+        // Persist the recent-colours palette if anything changed this
+        // frame. Writing is cheap (a few lines of hex); save-on-every-tick
+        // avoids needing an explicit shutdown hook.
+        if self.recent_colors != recents_before {
+            crate::recents::save(&self.recent_colors);
         }
     }
 
