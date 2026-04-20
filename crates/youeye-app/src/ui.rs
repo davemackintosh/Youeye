@@ -35,6 +35,47 @@ pub struct UiState {
     token_kinds: BTreeMap<String, ValueKind>,
     /// Same, but for variables.
     variable_kinds: BTreeMap<String, ValueKind>,
+    /// Rolling history of recently-used colours, newest first.
+    /// De-duplicated; capped at `RECENT_COLOURS_MAX`.
+    recent_colors: Vec<[u8; 4]>,
+}
+
+const RECENT_COLOURS_MAX: usize = 10;
+
+/// Record a colour in the "recents" palette. New entries go to the front;
+/// duplicates bubble to the front instead of piling up. Capped at
+/// [`RECENT_COLOURS_MAX`].
+fn remember_color(recent: &mut Vec<[u8; 4]>, rgba: [u8; 4]) {
+    if let Some(existing) = recent.iter().position(|c| *c == rgba) {
+        recent.remove(existing);
+    }
+    recent.insert(0, rgba);
+    if recent.len() > RECENT_COLOURS_MAX {
+        recent.truncate(RECENT_COLOURS_MAX);
+    }
+}
+
+fn rgba_f_to_u8(rgba: [f32; 4]) -> [u8; 4] {
+    [
+        (rgba[0].clamp(0.0, 1.0) * 255.0).round() as u8,
+        (rgba[1].clamp(0.0, 1.0) * 255.0).round() as u8,
+        (rgba[2].clamp(0.0, 1.0) * 255.0).round() as u8,
+        (rgba[3].clamp(0.0, 1.0) * 255.0).round() as u8,
+    ]
+}
+
+/// Clickable 14×14 swatch. Pass through the response so callers can see
+/// clicks / hover state.
+fn swatch_button(ui: &mut egui::Ui, color: Color32) -> egui::Response {
+    let (rect, resp) = ui.allocate_exact_size(egui::vec2(14.0, 14.0), egui::Sense::click());
+    ui.painter().rect_filled(rect, 2.0, color);
+    ui.painter().rect_stroke(
+        rect,
+        2.0,
+        egui::Stroke::new(1.0, Color32::BLACK),
+        egui::StrokeKind::Inside,
+    );
+    resp
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -352,6 +393,7 @@ impl UiState {
                     "--token-",
                     &mut ds.doc.tokens.0,
                     &mut self.token_kinds,
+                    &mut self.recent_colors,
                 );
                 became_dirty |= draw_dict_editor(
                     ui,
@@ -359,6 +401,7 @@ impl UiState {
                     "--var-",
                     &mut ds.doc.variables.0,
                     &mut self.variable_kinds,
+                    &mut self.recent_colors,
                 );
                 if became_dirty {
                     ds.dirty = true;
@@ -380,6 +423,7 @@ impl UiState {
                     "--token-",
                     &mut ds.doc.tokens.0,
                     &mut self.token_kinds,
+                    &mut self.recent_colors,
                 );
                 became_dirty |= draw_dict_editor(
                     ui,
@@ -387,6 +431,7 @@ impl UiState {
                     "--var-",
                     &mut ds.doc.variables.0,
                     &mut self.variable_kinds,
+                    &mut self.recent_colors,
                 );
                 if became_dirty {
                     ds.dirty = true;
@@ -396,6 +441,13 @@ impl UiState {
         };
 
         let token_names: Vec<String> = ds.doc.tokens.0.keys().cloned().collect();
+        let token_colors: Vec<(String, Color32)> = ds
+            .doc
+            .tokens
+            .0
+            .iter()
+            .filter_map(|(n, v)| parse_hint_color(v).map(|c| (n.clone(), c)))
+            .collect();
         let rulers_in_scope = collect_rulers_in_scope(&ds.doc, &path);
         // Populate the font list lazily — first time we need it.
         if self.font_families.is_none() {
@@ -430,8 +482,15 @@ impl UiState {
                 let id_str = id.as_deref().unwrap_or("(no id)");
                 ui.label(RichText::new(format!("Text · {id_str}")).strong());
                 ui.separator();
-                became_dirty |=
-                    draw_text_controls(ui, text, &token_names, &font_families, focus_text_content);
+                became_dirty |= draw_text_controls(
+                    ui,
+                    text,
+                    &token_names,
+                    &token_colors,
+                    &mut self.recent_colors,
+                    &font_families,
+                    focus_text_content,
+                );
             }
             Some(node) if supports_paint(node) => {
                 let kind = node_kind(node);
@@ -440,8 +499,20 @@ impl UiState {
                 ui.label(RichText::new(format!("{kind} · {id_str}")).strong());
                 ui.separator();
                 let base = node.base_mut();
-                became_dirty |= draw_fill_row(ui, &mut base.fill, &token_names);
-                became_dirty |= draw_stroke_row(ui, &mut base.stroke, &token_names);
+                became_dirty |= draw_fill_row(
+                    ui,
+                    &mut base.fill,
+                    &token_names,
+                    &token_colors,
+                    &mut self.recent_colors,
+                );
+                became_dirty |= draw_stroke_row(
+                    ui,
+                    &mut base.stroke,
+                    &token_names,
+                    &token_colors,
+                    &mut self.recent_colors,
+                );
                 became_dirty |=
                     draw_pins_section(ui, &mut base.youeye_attrs, &v_ruler_ids, &h_ruler_ids);
             }
@@ -460,6 +531,7 @@ impl UiState {
             "--token-",
             &mut ds.doc.tokens.0,
             &mut self.token_kinds,
+            &mut self.recent_colors,
         );
         became_dirty |= draw_dict_editor(
             ui,
@@ -467,6 +539,7 @@ impl UiState {
             "--var-",
             &mut ds.doc.variables.0,
             &mut self.variable_kinds,
+            &mut self.recent_colors,
         );
         if became_dirty {
             ds.dirty = true;
@@ -483,6 +556,7 @@ fn draw_dict_editor(
     prefix: &str,
     dict: &mut BTreeMap<String, String>,
     kinds: &mut BTreeMap<String, ValueKind>,
+    recent_colors: &mut Vec<[u8; 4]>,
 ) -> bool {
     let mut changed = false;
     ui.add_space(12.0);
@@ -531,7 +605,14 @@ fn draw_dict_editor(
 
                 match new_kind {
                     ValueKind::Color => {
-                        draw_color_row(ui, prefix, orig_name, &mut new_value, &color_picks);
+                        draw_color_row(
+                            ui,
+                            prefix,
+                            orig_name,
+                            &mut new_value,
+                            &color_picks,
+                            recent_colors,
+                        );
                     }
                     ValueKind::Length => {
                         draw_length_row(ui, prefix, orig_name, &mut new_value, &length_picks);
@@ -1083,14 +1164,16 @@ fn parse_hint_color(s: &str) -> Option<Color32> {
     None
 }
 
-/// Color-kind row editor. Swatch picker, hex TextEdit, and a "pick from
-/// other colour tokens" ComboBox whose entries show their own swatches.
+/// Color-kind row editor. Swatch picker, hex TextEdit, a "pick from other
+/// colour tokens" ComboBox, and a strip of recent-colour swatches that
+/// click-to-apply.
 fn draw_color_row(
     ui: &mut egui::Ui,
     prefix: &str,
     name: &str,
     value: &mut String,
     color_picks: &[(String, egui::Color32)],
+    recent_colors: &mut Vec<[u8; 4]>,
 ) {
     let trimmed = value.trim().to_string();
     let current_token = trimmed
@@ -1116,9 +1199,19 @@ fn draw_color_row(
     ];
     if ui.color_edit_button_srgba_unmultiplied(&mut rgba).changed() {
         *value = format_hex_rgba(rgba[0], rgba[1], rgba[2], rgba[3]);
+        remember_color(recent_colors, rgba);
     }
 
     ui.add(egui::TextEdit::singleline(value).desired_width(100.0));
+
+    // Recent palette — click to apply (overrides any token binding).
+    for rgba in recent_colors.clone() {
+        let chip = Color32::from_rgba_unmultiplied(rgba[0], rgba[1], rgba[2], rgba[3]);
+        if swatch_button(ui, chip).on_hover_text("recent").clicked() {
+            *value = format_hex_rgba(rgba[0], rgba[1], rgba[2], rgba[3]);
+            remember_color(recent_colors, rgba);
+        }
+    }
 
     // Token reference dropdown.
     let selected_label = current_token
@@ -1221,15 +1314,10 @@ fn draw_length_row(
         });
 }
 
+/// Non-interactive 14×14 colour chip. Wraps [`swatch_button`] but ignores
+/// the click response — used inline in lists for display only.
 fn draw_swatch(ui: &mut egui::Ui, color: egui::Color32) {
-    let (rect, _) = ui.allocate_exact_size(egui::vec2(14.0, 14.0), egui::Sense::hover());
-    ui.painter().rect_filled(rect, 2.0, color);
-    ui.painter().rect_stroke(
-        rect,
-        2.0,
-        egui::Stroke::new(1.0, Color32::BLACK),
-        egui::StrokeKind::Inside,
-    );
+    let _ = swatch_button(ui, color);
 }
 
 /// Parse `"12.5px"` into `(12.5, "px")`. Returns `None` when the string
@@ -1433,6 +1521,8 @@ fn draw_text_controls(
     ui: &mut egui::Ui,
     text: &mut youeye_doc::Text,
     token_names: &[String],
+    token_colors: &[(String, Color32)],
+    recent_colors: &mut Vec<[u8; 4]>,
     font_families: &[String],
     focus_content: bool,
 ) -> bool {
@@ -1527,7 +1617,13 @@ fn draw_text_controls(
     });
 
     ui.add_space(6.0);
-    changed |= draw_fill_row(ui, &mut text.base.fill, token_names);
+    changed |= draw_fill_row(
+        ui,
+        &mut text.base.fill,
+        token_names,
+        token_colors,
+        recent_colors,
+    );
 
     changed
 }
@@ -1704,23 +1800,35 @@ enum PaintKind {
     Raw,
 }
 
-fn draw_fill_row(ui: &mut egui::Ui, fill: &mut Option<Fill>, tokens: &[String]) -> bool {
+fn draw_fill_row(
+    ui: &mut egui::Ui,
+    fill: &mut Option<Fill>,
+    tokens: &[String],
+    token_colors: &[(String, Color32)],
+    recent_colors: &mut Vec<[u8; 4]>,
+) -> bool {
     let mut changed = false;
     ui.horizontal(|ui| {
         ui.label("Fill");
         let paint = fill_paint_mut(fill);
-        changed |= paint_picker(ui, "fill", paint, tokens);
+        changed |= paint_picker(ui, "fill", paint, tokens, token_colors, recent_colors);
         off_token_chip(ui, paint, tokens);
     });
     changed
 }
 
-fn draw_stroke_row(ui: &mut egui::Ui, stroke: &mut Option<Stroke>, tokens: &[String]) -> bool {
+fn draw_stroke_row(
+    ui: &mut egui::Ui,
+    stroke: &mut Option<Stroke>,
+    tokens: &[String],
+    token_colors: &[(String, Color32)],
+    recent_colors: &mut Vec<[u8; 4]>,
+) -> bool {
     let mut changed = false;
     ui.horizontal(|ui| {
         ui.label("Stroke");
         let paint = stroke_paint_mut(stroke);
-        changed |= paint_picker(ui, "stroke", paint, tokens);
+        changed |= paint_picker(ui, "stroke", paint, tokens, token_colors, recent_colors);
         off_token_chip(ui, paint, tokens);
     });
     // Width control — only meaningful when stroke is not None.
@@ -1762,7 +1870,14 @@ fn stroke_paint_mut(stroke: &mut Option<Stroke>) -> &mut Paint {
     &mut stroke.as_mut().unwrap().paint
 }
 
-fn paint_picker(ui: &mut egui::Ui, salt: &str, paint: &mut Paint, tokens: &[String]) -> bool {
+fn paint_picker(
+    ui: &mut egui::Ui,
+    salt: &str,
+    paint: &mut Paint,
+    tokens: &[String],
+    token_colors: &[(String, Color32)],
+    recent_colors: &mut Vec<[u8; 4]>,
+) -> bool {
     let mut changed = false;
 
     let current_kind = classify_paint(paint);
@@ -1787,13 +1902,42 @@ fn paint_picker(ui: &mut egui::Ui, salt: &str, paint: &mut Paint, tokens: &[Stri
     match paint {
         Paint::None => {}
         Paint::Solid(color) => {
-            let mut rgba = [color.r, color.g, color.b, color.a];
-            if ui.color_edit_button_rgba_unmultiplied(&mut rgba).changed() {
-                color.r = rgba[0];
-                color.g = rgba[1];
-                color.b = rgba[2];
-                color.a = rgba[3];
+            let mut rgba_f = [color.r, color.g, color.b, color.a];
+            if ui
+                .color_edit_button_rgba_unmultiplied(&mut rgba_f)
+                .changed()
+            {
+                color.r = rgba_f[0];
+                color.g = rgba_f[1];
+                color.b = rgba_f[2];
+                color.a = rgba_f[3];
+                remember_color(recent_colors, rgba_f_to_u8(rgba_f));
                 changed = true;
+            }
+            // Inline palette: token swatches (click to bind to that token)
+            // and recent colours (click to apply raw).
+            for (name, swatch) in token_colors {
+                if swatch_button(ui, *swatch)
+                    .on_hover_text(format!("Bind to --token-{name}"))
+                    .clicked()
+                {
+                    *paint = Paint::Raw(format!("var(--token-{name})"));
+                    changed = true;
+                    return changed;
+                }
+            }
+            for rgba in recent_colors.clone() {
+                let chip = Color32::from_rgba_unmultiplied(rgba[0], rgba[1], rgba[2], rgba[3]);
+                if swatch_button(ui, chip).on_hover_text("recent").clicked()
+                    && let Paint::Solid(c) = paint
+                {
+                    c.r = rgba[0] as f32 / 255.0;
+                    c.g = rgba[1] as f32 / 255.0;
+                    c.b = rgba[2] as f32 / 255.0;
+                    c.a = rgba[3] as f32 / 255.0;
+                    remember_color(recent_colors, rgba);
+                    changed = true;
+                }
             }
         }
         Paint::Raw(s) if is_token_ref(s) => {
@@ -1806,10 +1950,16 @@ fn paint_picker(ui: &mut egui::Ui, salt: &str, paint: &mut Paint, tokens: &[Stri
                 })
                 .show_ui(ui, |ui| {
                     for t in tokens {
-                        if ui.selectable_label(current == *t, t).clicked() {
-                            *s = format!("var(--token-{t})");
-                            changed = true;
-                        }
+                        let swatch = token_colors.iter().find(|(n, _)| n == t).map(|(_, c)| *c);
+                        ui.horizontal(|ui| {
+                            if let Some(c) = swatch {
+                                draw_swatch(ui, c);
+                            }
+                            if ui.selectable_label(current == *t, t).clicked() {
+                                *s = format!("var(--token-{t})");
+                                changed = true;
+                            }
+                        });
                     }
                 });
         }
