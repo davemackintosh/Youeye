@@ -31,6 +31,9 @@ wgpu = "27"
 vello = "0.7"
 kurbo = "0.13"
 
+# Flexbox layout engine — drives auto-layout frames.
+taffy = "0.10"
+
 # Native menus (Mac / Windows only — muda pulls GTK on Linux, which we avoid).
 muda = "0.17"
 

@@ -17,6 +17,8 @@ use vello::peniko::{Brush, Fill as VelloFill};
 
 use youeye_doc::{Color, Document, Node, NodeBase, Paint};
 
+use crate::layout;
+
 /// Append draw commands for `doc` to `scene`, composed under `root_xform`.
 ///
 /// The caller decides what `root_xform` means — typically a camera transform
@@ -37,8 +39,19 @@ fn render_node(scene: &mut Scene, node: &Node, parent_xform: Affine) {
         }
         Node::Frame(f) => {
             let local = xform * Affine::translate(Vec2::new(f.x, f.y));
-            for c in &f.children {
-                render_node(scene, c, local);
+            match layout::compute_flex_positions(f) {
+                Some(positions) => {
+                    for (child, placed) in f.children.iter().zip(positions.iter()) {
+                        let shift = placed.top_left - layout::authored_top_left(child);
+                        let child_xform = local * Affine::translate(shift);
+                        render_node(scene, child, child_xform);
+                    }
+                }
+                None => {
+                    for c in &f.children {
+                        render_node(scene, c, local);
+                    }
+                }
             }
         }
         Node::Rect(r) => {

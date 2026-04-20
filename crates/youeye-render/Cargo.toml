@@ -11,4 +11,5 @@ youeye-doc.workspace = true
 vello.workspace = true
 wgpu.workspace = true
 kurbo.workspace = true
+taffy.workspace = true
 anyhow.workspace = true

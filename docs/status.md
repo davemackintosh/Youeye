@@ -8,7 +8,7 @@ Last updated: **2026-04-20**.
 
 **Phase 1 — Foundation** ✅ complete.
 **Phase 2 — Document model + SVG round-trip** ✅ complete (slices A, B, C).
-**Phase 3 — Auto-layout (taffy)** 🚧 in progress (slice A done, slices B+C next).
+**Phase 3 — Auto-layout (taffy)** 🚧 in progress (slices A+B done, slice C next).
 
 - 1a — Workspace scaffold, egui + winit + wgpu window with chrome (toolbar, layers, inspector, status bar, menu bar).
 - 1b — Vello canvas with pan/zoom, rendered into an offscreen `Rgba8Unorm` texture registered as an egui native texture.
@@ -90,14 +90,16 @@ Sliced A/B/C like phase 2. **Decision:** Frame is a nested `<svg>` on wire — i
 - Serializer: Frame → `<svg x=".." y=".." width=".." height="..">`; flex-layout metadata rides through as `youeye:*`.
 - 5 new tests: parse, round-trip, empty frame, flex-attr preservation, nested frames. Full io suite: 18 tests.
 
-**Slice B (next)** — Taffy integration.
-- Add `taffy` dep.
-- Scene builder: when a Frame has `youeye:layout="flex"`, build a taffy tree from its children, run compute, offset each child by taffy's computed `(x, y)` before recursing.
-- Read `youeye:flex-direction` / `justify` / `align` / `gap` / `padding` off the Frame's `youeye_attrs`.
-- Per-child overrides (`flex-grow`, `align-self`) come later.
-- Drive via SVG input for now; no UI editing yet.
+**Slice B ✅** — Taffy integration.
+- `taffy` 0.10 pinned in workspace, dep on `youeye-render`.
+- New `youeye_render::layout` module — `compute_flex_positions(&Frame) -> Option<Vec<ChildLayout>>`. Scene builder translates each child so its authored top-left lands at taffy's computed position, regardless of the child's authored `(x, y)`.
+- Frame-level attrs read today: `layout="flex"`, `flex-direction`, `justify`, `align`, `gap`, `padding`. Single-value padding only (shorthand parsing defers to slice C).
+- `var(--...)` / `calc(...)` on gap/padding resolve to `0` for now; token resolver lands with the inspector in slice C.
+- Child size heuristics: Rect = `(width, height)`; Frame = `(width, height)`; Ellipse = `(2rx, 2ry)`; Path = kurbo bounding box; Group / Text contribute `0x0` until their intrinsic sizing lands.
+- Per-child flex overrides (`flex-grow`, `flex-shrink`, `align-self`, `flex-basis`) still deferred.
+- 9 layout unit tests + 3 existing scene tests; render suite 12 passing.
 
-**Slice C** — Inspector write-back.
+**Slice C (next)** — Inspector write-back.
 - Flex controls in the right panel when a Frame is selected.
 - Introduces `&mut Document` plumbing through `ui.draw` — first UI-driven state mutation.
 - Gap/padding picker: default step = `--var-rhythm` if present, else fallback.
