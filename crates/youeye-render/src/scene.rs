@@ -143,8 +143,8 @@ fn render_node(
         Node::Path(p) => {
             paint_shape(scene, &p.data, node.base(), xform);
         }
-        Node::Text(_) => {
-            // Deferred to phase 8 (parley).
+        Node::Text(t) => {
+            crate::text::draw_text(scene, t, xform);
         }
         Node::Ruler(r) => {
             render_ruler(scene, r, xform, parent_bounds);

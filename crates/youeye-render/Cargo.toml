@@ -12,4 +12,5 @@ vello.workspace = true
 wgpu.workspace = true
 kurbo.workspace = true
 taffy.workspace = true
+parley.workspace = true
 anyhow.workspace = true

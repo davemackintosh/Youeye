@@ -34,6 +34,10 @@ kurbo = "0.13"
 # Flexbox layout engine — drives auto-layout frames.
 taffy = "0.10"
 
+# Text layout — system fonts via fontique, shaping via swash. Paired with
+# vello for GPU glyph drawing.
+parley = "0.8"
+
 # Native menus (Mac / Windows only — muda pulls GTK on Linux, which we avoid).
 muda = "0.17"
 

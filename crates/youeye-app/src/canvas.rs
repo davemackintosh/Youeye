@@ -99,6 +99,11 @@ pub struct Canvas {
     /// Pixel size requested by the last `ui()` call — what the next `render()`
     /// should produce.
     pending_size_px: [u32; 2],
+    /// egui's pixels-per-point captured on the last `ui()` call. Camera
+    /// coordinates and pointer input live in *logical* pixels; the render
+    /// transform scales by this at the end to end up in texture (physical)
+    /// pixel space.
+    pending_ppp: f64,
     /// Whether Space is currently held. Tracked across frames because
     /// drag-start doesn't re-read modifier state.
     space_held: bool,
@@ -115,6 +120,7 @@ impl Canvas {
             target: None,
             camera: Camera::default(),
             pending_size_px: [0, 0],
+            pending_ppp: 1.0,
             space_held: false,
             drag: None,
         })
@@ -201,6 +207,7 @@ impl Canvas {
     ) -> bool {
         let rect = ui.available_rect_before_wrap();
         let ppp = ui.ctx().pixels_per_point();
+        self.pending_ppp = ppp as f64;
         self.pending_size_px = [
             (rect.width() * ppp).round().max(1.0) as u32,
             (rect.height() * ppp).round().max(1.0) as u32,
@@ -409,7 +416,11 @@ impl Canvas {
     /// selection decorations.
     fn build_scene(&mut self, doc: Option<&Document>, selection: Option<&[usize]>) {
         self.scene.reset();
-        let xform = Affine::translate(self.camera.translate) * Affine::scale(self.camera.scale);
+        // Camera is in logical pixels; the final scale(ppp) converts to the
+        // texture's physical pixel space.
+        let xform = Affine::scale(self.pending_ppp)
+            * Affine::translate(self.camera.translate)
+            * Affine::scale(self.camera.scale);
 
         let grid = Stroke::new(1.0 / self.camera.scale.max(0.001));
         let grid_brush = Brush::Solid(srgb(0x28, 0x28, 0x2e, 0xff));
