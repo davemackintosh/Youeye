@@ -44,11 +44,13 @@ pub fn from_svg(input: &str) -> Result<Document> {
         match reader.read_event()? {
             Event::Start(ref e) if local_name(e.name().as_ref()) == b"svg" => {
                 let mut doc = document_from_start(e)?;
-                parse_children(&mut reader, &mut doc.children, &mut doc.raw_style, b"svg")?;
-                if let Some(css) = &doc.raw_style {
-                    let (tokens, variables) = extract_root_declarations(css);
+                let mut raw_style: Option<String> = None;
+                parse_children(&mut reader, &mut doc.children, &mut raw_style, b"svg")?;
+                if let Some(css) = raw_style {
+                    let (tokens, variables, extra) = split_style_block(&css);
                     doc.tokens = tokens;
                     doc.variables = variables;
+                    doc.raw_style_extra = extra;
                 }
                 return Ok(doc);
             }
@@ -97,20 +99,72 @@ pub fn to_svg(doc: &Document) -> String {
             .or_insert_with(|| "https://youeye.app/ns".into());
     }
 
-    let body_empty = doc.children.is_empty() && doc.raw_style.is_none();
+    let style_body = build_style_block(doc);
+    let body_empty = doc.children.is_empty() && style_body.is_none();
     write_open_tag(&mut out, 0, "svg", &attrs, body_empty);
     if body_empty {
         return out;
     }
 
-    if let Some(css) = &doc.raw_style {
-        write_style(&mut out, 1, css);
+    if let Some(css) = style_body {
+        write_style(&mut out, 1, &css);
     }
     for child in &doc.children {
         write_node(&mut out, 1, child);
     }
     write_close_tag(&mut out, 0, "svg");
     out
+}
+
+/// Build the content of the `<style>` element by concatenating a generated
+/// `:root { ... }` block (from `doc.tokens` + `doc.variables`) with
+/// `doc.raw_style_extra`. Returns `None` when there's nothing to emit.
+fn build_style_block(doc: &Document) -> Option<String> {
+    let has_tokens = !doc.tokens.is_empty();
+    let has_variables = !doc.variables.is_empty();
+    let has_extra = doc
+        .raw_style_extra
+        .as_ref()
+        .map(|s| !s.trim().is_empty())
+        .unwrap_or(false);
+    if !has_tokens && !has_variables && !has_extra {
+        return None;
+    }
+
+    let mut out = String::new();
+    if has_tokens || has_variables {
+        out.push_str(":root {");
+        for (name, value) in &doc.tokens.0 {
+            out.push_str(LINE_ENDING);
+            out.push_str(INDENT);
+            out.push_str("--token-");
+            out.push_str(name);
+            out.push_str(": ");
+            out.push_str(value);
+            out.push(';');
+        }
+        for (name, value) in &doc.variables.0 {
+            out.push_str(LINE_ENDING);
+            out.push_str(INDENT);
+            out.push_str("--var-");
+            out.push_str(name);
+            out.push_str(": ");
+            out.push_str(value);
+            out.push(';');
+        }
+        out.push_str(LINE_ENDING);
+        out.push('}');
+    }
+    if let Some(extra) = &doc.raw_style_extra {
+        let trimmed = extra.trim();
+        if !trimmed.is_empty() {
+            if !out.is_empty() {
+                out.push_str(LINE_ENDING);
+            }
+            out.push_str(trimmed);
+        }
+    }
+    Some(out)
 }
 
 // ---- parser internals ----
@@ -497,45 +551,71 @@ fn parse_rgb_fn(s: &str) -> Option<Color> {
 /// Extract `--token-*` and `--var-*` declarations from any `:root { ... }`
 /// blocks in the CSS text. Anything else (selectors, `@media`, `@font-face`)
 /// is ignored here — `raw_style` keeps the full text for round-trip.
-pub fn extract_root_declarations(css: &str) -> (Tokens, Variables) {
+/// Split a `<style>` block's text into its `:root` declarations (as
+/// [`Tokens`] / [`Variables`]) and everything else (`@font-face`, `@media`,
+/// class modifiers) as raw CSS preserved verbatim.
+///
+/// The parser is deliberately dumb: it finds top-level `:root {...}` spans
+/// by brace-matching, extracts `--token-*` / `--var-*` declarations out of
+/// them, and leaves every other rule — including any non-custom-property
+/// declarations inside `:root` — in the extra blob. Good enough for our own
+/// files; a foreign SVG with CSS inside `@media` queries will lose its
+/// mode scope until phase 4 slice D.
+pub fn split_style_block(css: &str) -> (Tokens, Variables, Option<String>) {
     let mut tokens = Tokens::default();
     let mut variables = Variables::default();
+    let mut extra = String::new();
 
-    let bytes = css.as_bytes();
     let mut i = 0;
-    while i < bytes.len() {
-        if css[i..].trim_start().starts_with(":root") {
-            let remainder = &css[i..];
-            let skipped = remainder.len() - remainder.trim_start().len();
-            let after_selector = &remainder[skipped + ":root".len()..];
-            if let Some(open) = after_selector.find('{') {
-                let body_start = skipped + ":root".len() + open + 1;
-                if let Some(close) = css[i + body_start..].find('}') {
-                    let body = &css[i + body_start..i + body_start + close];
+    while i < css.len() {
+        let remainder = &css[i..];
+        let trimmed = remainder.trim_start();
+        let lead = remainder.len() - trimmed.len();
+        if trimmed.starts_with(":root") {
+            let after = &trimmed[":root".len()..];
+            if let Some(open_offset) = after.find('{') {
+                let body_start = i + lead + ":root".len() + open_offset + 1;
+                if let Some(close_rel) = css[body_start..].find('}') {
+                    let body = &css[body_start..body_start + close_rel];
                     for decl in body.split(';') {
                         let decl = decl.trim();
                         if decl.is_empty() {
                             continue;
                         }
-                        if let Some((name, value)) = decl.split_once(':') {
-                            let name = name.trim();
-                            let value = value.trim().to_string();
-                            if let Some(bare) = name.strip_prefix("--token-") {
-                                tokens.insert(bare, value);
-                            } else if let Some(bare) = name.strip_prefix("--var-") {
-                                variables.insert(bare, value);
-                            }
+                        let Some((name, value)) = decl.split_once(':') else {
+                            continue;
+                        };
+                        let name = name.trim();
+                        let value = value.trim().to_string();
+                        if let Some(bare) = name.strip_prefix("--token-") {
+                            tokens.insert(bare, value);
+                        } else if let Some(bare) = name.strip_prefix("--var-") {
+                            variables.insert(bare, value);
                         }
+                        // Other declarations inside :root (e.g. plain
+                        // `color: blue`) are dropped — they're not part of
+                        // our token model. Users can put non-:root rules in
+                        // the style block if they need them.
                     }
-                    i = i + body_start + close + 1;
+                    extra.push_str(&css[i..i + lead]);
+                    i = body_start + close_rel + 1;
                     continue;
                 }
             }
         }
-        i += 1;
+        // Not at a :root block — take one char and keep scanning.
+        let ch = css[i..].chars().next().unwrap();
+        extra.push(ch);
+        i += ch.len_utf8();
     }
 
-    (tokens, variables)
+    let trimmed_extra = extra.trim().to_string();
+    let extra_opt = if trimmed_extra.is_empty() {
+        None
+    } else {
+        Some(trimmed_extra)
+    };
+    (tokens, variables, extra_opt)
 }
 
 // ---- writer ----
@@ -878,12 +958,67 @@ mod tests {
         let doc = from_svg(input).unwrap();
         assert_eq!(doc.tokens.get("brand-primary"), Some("#0052cc"));
         assert_eq!(doc.variables.get("rhythm"), Some("8px"));
-        assert!(doc.raw_style.is_some());
+        assert!(doc.raw_style_extra.is_none());
 
         let out = to_svg(&doc);
         assert!(out.contains("<style>"));
-        assert!(out.contains("--token-brand-primary"));
-        assert_canonical_stable(input);
+        assert!(out.contains("--token-brand-primary: #0052cc"));
+        assert!(out.contains("--var-rhythm: 8px"));
+
+        // Round-trip through the canonicalised form is byte-stable.
+        let doc2 = from_svg(&out).unwrap();
+        assert_eq!(to_svg(&doc2), out);
+    }
+
+    #[test]
+    fn style_extra_preserved_alongside_tokens() {
+        let input = r##"<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg">
+  <style>:root { --token-brand: red; } @font-face { font-family: "Inter"; src: url(inter.woff2); }</style>
+</svg>"##;
+        let doc = from_svg(input).unwrap();
+        assert_eq!(doc.tokens.get("brand"), Some("red"));
+        let extra = doc.raw_style_extra.as_deref().unwrap();
+        assert!(extra.contains("@font-face"));
+        assert!(extra.contains("Inter"));
+
+        let out = to_svg(&doc);
+        assert!(out.contains("--token-brand: red"));
+        assert!(out.contains("@font-face"));
+
+        let doc2 = from_svg(&out).unwrap();
+        assert_eq!(to_svg(&doc2), out);
+    }
+
+    #[test]
+    fn style_extra_only_preserves_when_no_tokens() {
+        let input = r##"<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg">
+  <style>@font-face { font-family: "Inter"; src: url(inter.woff2); }</style>
+</svg>"##;
+        let doc = from_svg(input).unwrap();
+        assert!(doc.tokens.is_empty());
+        assert!(doc.variables.is_empty());
+        let extra = doc.raw_style_extra.as_deref().unwrap();
+        assert!(extra.contains("@font-face"));
+
+        let out = to_svg(&doc);
+        // No :root emitted since nothing to put there.
+        assert!(!out.contains(":root"));
+        assert!(out.contains("@font-face"));
+    }
+
+    #[test]
+    fn editing_tokens_reflects_in_output() {
+        let input = r##"<?xml version="1.0" encoding="UTF-8"?>
+<svg xmlns="http://www.w3.org/2000/svg"><style>:root { --token-brand: red; }</style></svg>"##;
+        let mut doc = from_svg(input).unwrap();
+        doc.tokens.insert("brand", "blue");
+        doc.tokens.insert("accent", "#00ff00");
+        let out = to_svg(&doc);
+        assert!(out.contains("--token-brand: blue"));
+        assert!(out.contains("--token-accent: #00ff00"));
+        assert!(!out.contains("--token-brand: red"));
     }
 
     #[test]
@@ -895,13 +1030,24 @@ mod tests {
     }
 
     #[test]
-    fn extract_root_declarations_basic() {
+    fn split_style_block_basic() {
         let css = ":root { --token-foo: red; --var-bar: 4px; color: blue; }";
-        let (tokens, variables) = extract_root_declarations(css);
+        let (tokens, variables, extra) = split_style_block(css);
         assert_eq!(tokens.get("foo"), Some("red"));
         assert_eq!(variables.get("bar"), Some("4px"));
         assert_eq!(tokens.len(), 1);
         assert_eq!(variables.len(), 1);
+        assert!(extra.is_none());
+    }
+
+    #[test]
+    fn split_style_block_preserves_non_root_rules() {
+        let css = ":root { --token-a: 1; } @font-face { src: url(x); }";
+        let (tokens, _, extra) = split_style_block(css);
+        assert_eq!(tokens.get("a"), Some("1"));
+        let extra = extra.unwrap();
+        assert!(extra.contains("@font-face"));
+        assert!(!extra.contains(":root"));
     }
 
     #[test]

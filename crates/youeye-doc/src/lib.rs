@@ -41,12 +41,11 @@ pub struct Document {
     /// (`xmlns`, `xmlns:youeye`, `version`, etc.). Preserved verbatim so
     /// canonical round-trip keeps the file self-describing.
     pub extra_attrs: BTreeMap<String, String>,
-    /// Full verbatim text content of the `<style>` block, if present. This is
-    /// the source of truth for the style block round-trip; `tokens` and
-    /// `variables` are a read-only view extracted from any `:root` rules.
-    /// Editor code that wants to *write* new tokens/variables needs to
-    /// regenerate `raw_style` — slice B doesn't do that yet.
-    pub raw_style: Option<String>,
+    /// Any CSS from the `<style>` block that isn't a top-level `:root`
+    /// declaration — `@font-face`, `@media`, class modifiers. Preserved
+    /// verbatim across round-trip. Top-level `:root` content is the
+    /// business of `tokens` / `variables`, which are authoritative.
+    pub raw_style_extra: Option<String>,
 }
 
 impl Document {

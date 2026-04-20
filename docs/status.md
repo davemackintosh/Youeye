@@ -9,6 +9,7 @@ Last updated: **2026-04-20**.
 **Phase 1 — Foundation** ✅ complete.
 **Phase 2 — Document model + SVG round-trip** ✅ complete (slices A, B, C).
 **Phase 3 — Auto-layout (taffy)** ✅ complete (slices A, B, C).
+**Phase 4 — Tokens + variables UI with enforcement** 🚧 in progress (slice A done; B/C/D next).
 
 - 1a — Workspace scaffold, egui + winit + wgpu window with chrome (toolbar, layers, inspector, status bar, menu bar).
 - 1b — Vello canvas with pan/zoom, rendered into an offscreen `Rgba8Unorm` texture registered as an egui native texture.
@@ -107,10 +108,22 @@ Sliced A/B/C like phase 2. **Decision:** Frame is a nested `<svg>` on wire — i
 
 ### Phase 4 — Tokens + variables UI with enforcement
 
-- Tokens panel (right sidebar, below Inspector). Add/edit/reorder/delete tokens. Palette grouping via `project.yeye.json`.
-- Variables panel, similarly. Expression editor with autocomplete for token names.
-- All colour/size/font pickers gain a "token-first" mode. Inspector shows an "off-token" chip on raw values.
-- Mode switcher in the top bar; CSS media queries + class modifiers drive rendering.
+**Slice A ✅** — Token/Variable CRUD.
+- Flip ownership: `Document.tokens`/`variables` are now authoritative; `raw_style` renamed to `raw_style_extra` and only stores non-`:root` CSS (`@font-face`, etc.).
+- Parser: `split_style_block(css)` extracts `:root` declarations into Tokens/Variables and puts the rest into `raw_style_extra`.
+- Serializer: regenerates a canonical `:root { ... }` block from Tokens/Variables (sorted) and appends `raw_style_extra` verbatim. First save canonicalises; subsequent load+save byte-stable.
+- Inspector: tokens/variables panels are now editable — rename, change value, delete, add. Shared `draw_dict_editor` helper used for both. Changes mark doc dirty.
+- 4 new io tests (extra-preserved alongside tokens, extra-only, editing-reflects-in-output, and the existing split tests).
+
+**Slice B (next)** — Token-first pickers.
+- Fill/stroke pickers in the inspector gain a mode: pick a token (dropdown of available token names), pick a raw colour, or type a raw value. Editing writes `Paint::Raw("var(--token-xxx)")` for token bindings.
+- Skip font picker (needs parley).
+
+**Slice C** — Off-token chip.
+- Inspector surfaces a small "off-token" / "off-rhythm" warning on raw values when tokens exist and the node uses a raw colour or non-rhythm spacing. Non-enforcing — guide, don't gatekeep.
+
+**Slice D** (deferred) — Mode switcher.
+- `@media (prefers-color-scheme: dark)` and class modifiers (`.mode-compact { ... }`) — needs CSS context evaluation and mode-aware token/variable lookup. Defer until there's a concrete use case.
 
 ### Phase 5 — Rulers + constraints (kiwi)
 

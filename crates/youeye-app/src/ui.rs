@@ -1,5 +1,7 @@
 //! egui layout: sidebars, status bar, central canvas.
 
+use std::collections::BTreeMap;
+
 use egui::{Color32, RichText};
 use youeye_doc::{Frame, Node};
 
@@ -133,14 +135,17 @@ impl UiState {
             .unwrap_or(1.0);
 
         let selection = self.selection.clone();
+        let mut became_dirty = false;
         let Some(path) = selection else {
             ui.label(RichText::new("Nothing selected").color(Color32::GRAY));
-            draw_tokens_and_variables(ui, &ds.doc);
+            became_dirty |= draw_dict_editor(ui, "Tokens", "--token-", &mut ds.doc.tokens.0);
+            became_dirty |= draw_dict_editor(ui, "Variables", "--var-", &mut ds.doc.variables.0);
+            if became_dirty {
+                ds.dirty = true;
+            }
             return;
         };
 
-        let dirty = ds.dirty;
-        let mut became_dirty = false;
         match ds.doc.node_at_mut(&path) {
             Some(Node::Frame(frame)) => {
                 ui.label(
@@ -162,34 +167,112 @@ impl UiState {
                 ui.label(RichText::new("Selection is stale.").color(Color32::GRAY));
             }
         }
+        became_dirty |= draw_dict_editor(ui, "Tokens", "--token-", &mut ds.doc.tokens.0);
+        became_dirty |= draw_dict_editor(ui, "Variables", "--var-", &mut ds.doc.variables.0);
         if became_dirty {
             ds.dirty = true;
         }
-        let _ = dirty;
-        draw_tokens_and_variables(ui, &ds.doc);
     }
 }
 
-fn draw_tokens_and_variables(ui: &mut egui::Ui, doc: &youeye_doc::Document) {
+/// Editable rows for a `BTreeMap<String, String>` with "Add" / "Delete" /
+/// rename / value-edit. Used for both Tokens and Variables. Returns `true`
+/// when the user made any change this frame.
+fn draw_dict_editor(
+    ui: &mut egui::Ui,
+    heading: &str,
+    prefix: &str,
+    dict: &mut BTreeMap<String, String>,
+) -> bool {
+    let mut changed = false;
     ui.add_space(12.0);
-    ui.collapsing("Tokens", |ui| {
-        if doc.tokens.is_empty() {
-            ui.label(RichText::new("— none —").color(Color32::GRAY));
-        } else {
-            for (name, value) in &doc.tokens.0 {
-                ui.label(format!("--token-{name}: {value}"));
+    ui.collapsing(heading, |ui| {
+        let originals: Vec<(String, String)> =
+            dict.iter().map(|(k, v)| (k.clone(), v.clone())).collect();
+
+        // Collect edits; apply after the iteration so we never mutate the
+        // BTreeMap while drawing rows from it.
+        let mut edits: Vec<DictEdit> = Vec::new();
+
+        for (orig_name, orig_value) in &originals {
+            let mut new_name = orig_name.clone();
+            let mut new_value = orig_value.clone();
+            let mut delete = false;
+            ui.horizontal(|ui| {
+                ui.label(prefix);
+                ui.add(egui::TextEdit::singleline(&mut new_name).desired_width(100.0));
+                ui.label(":");
+                ui.add(egui::TextEdit::singleline(&mut new_value).desired_width(120.0));
+                if ui.small_button("×").on_hover_text("Delete").clicked() {
+                    delete = true;
+                }
+            });
+            if delete {
+                edits.push(DictEdit::Delete(orig_name.clone()));
+            } else if new_name != *orig_name {
+                edits.push(DictEdit::Rename {
+                    from: orig_name.clone(),
+                    to: new_name,
+                    value: new_value,
+                });
+            } else if new_value != *orig_value {
+                edits.push(DictEdit::UpdateValue {
+                    name: orig_name.clone(),
+                    value: new_value,
+                });
+            }
+        }
+
+        if ui.button("Add").clicked() {
+            let base = match prefix {
+                "--token-" => "new-token",
+                "--var-" => "new-var",
+                _ => "new",
+            };
+            let mut i = 1u32;
+            let mut name = base.to_string();
+            while dict.contains_key(&name) {
+                i += 1;
+                name = format!("{base}-{i}");
+            }
+            dict.insert(name, String::new());
+            changed = true;
+        }
+
+        if !edits.is_empty() {
+            changed = true;
+        }
+        for edit in edits {
+            match edit {
+                DictEdit::Delete(name) => {
+                    dict.remove(&name);
+                }
+                DictEdit::UpdateValue { name, value } => {
+                    dict.insert(name, value);
+                }
+                DictEdit::Rename { from, to, value } => {
+                    dict.remove(&from);
+                    if !to.is_empty() {
+                        dict.insert(to, value);
+                    }
+                }
             }
         }
     });
-    ui.collapsing("Variables", |ui| {
-        if doc.variables.is_empty() {
-            ui.label(RichText::new("— none —").color(Color32::GRAY));
-        } else {
-            for (name, value) in &doc.variables.0 {
-                ui.label(format!("--var-{name}: {value}"));
-            }
-        }
-    });
+    changed
+}
+
+enum DictEdit {
+    Delete(String),
+    UpdateValue {
+        name: String,
+        value: String,
+    },
+    Rename {
+        from: String,
+        to: String,
+        value: String,
+    },
 }
 
 /// Renders the flex controls for a Frame. Returns `true` if the user edited
