@@ -15,7 +15,7 @@ use vello::peniko::{Brush, Color};
 use vello::{AaConfig, RenderParams, Renderer, RendererOptions, Scene};
 use youeye_doc::{
     Color as DocColor, Document, Ellipse, Fill, Frame, Node, NodeBase, Paint, Rect,
-    RulerOrientation,
+    RulerOrientation, Text,
 };
 
 use crate::modifiers::{Modifier, held};
@@ -340,15 +340,46 @@ impl Canvas {
             }
         }
 
-        // Plain click (no drag) with Select tool — hit-test and update
-        // selection (or clear on empty-space click).
+        // Plain click (no drag) handlers — selection hit-test for Select,
+        // and single-click placement for the Text tool.
         if response.clicked_by(egui::PointerButton::Primary)
-            && tool == Tool::Select
             && self.drag.is_none()
             && let Some(world) = pointer_world
-            && let Some(doc) = doc.as_deref()
         {
-            *selection = hit_test(doc, world);
+            match tool {
+                Tool::Select => {
+                    if let Some(doc) = doc.as_deref() {
+                        *selection = hit_test(doc, world);
+                    }
+                }
+                Tool::Text => {
+                    if let Some(doc) = doc.as_deref_mut() {
+                        let text = Text {
+                            base: NodeBase {
+                                fill: Some(Fill {
+                                    paint: Paint::Solid(DocColor {
+                                        r: 0.92,
+                                        g: 0.92,
+                                        b: 0.95,
+                                        a: 1.0,
+                                    }),
+                                    opacity: None,
+                                }),
+                                ..Default::default()
+                            },
+                            x: world.x,
+                            y: world.y,
+                            content: "Text".into(),
+                            font_family: None,
+                            font_size: Some(24.0),
+                        };
+                        doc.children.push(Node::Text(text));
+                        *selection = Some(vec![doc.children.len() - 1]);
+                        mutated = true;
+                    }
+                }
+                _ => {}
+            }
         }
 
         mutated

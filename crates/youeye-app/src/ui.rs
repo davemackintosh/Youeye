@@ -118,6 +118,9 @@ impl UiState {
                         if ui.button("+Ellipse").clicked() {
                             pending_adds.push(Node::Ellipse(default_ellipse()));
                         }
+                        if ui.button("+Text").clicked() {
+                            pending_adds.push(Node::Text(default_text()));
+                        }
                         if ui.button("+Group").clicked() {
                             pending_adds.push(Node::Group(default_group()));
                         }
@@ -253,6 +256,13 @@ impl UiState {
                 );
                 ui.separator();
                 became_dirty |= draw_frame_flex_controls(ui, frame, rhythm_step);
+            }
+            Some(Node::Text(text)) => {
+                let id = text.base.id.clone();
+                let id_str = id.as_deref().unwrap_or("(no id)");
+                ui.label(RichText::new(format!("Text · {id_str}")).strong());
+                ui.separator();
+                became_dirty |= draw_text_controls(ui, text, &token_names);
             }
             Some(node) if supports_paint(node) => {
                 let kind = node_kind(node);
@@ -702,6 +712,98 @@ fn default_ellipse() -> youeye_doc::Ellipse {
 
 fn default_group() -> youeye_doc::Group {
     youeye_doc::Group::default()
+}
+
+fn draw_text_controls(
+    ui: &mut egui::Ui,
+    text: &mut youeye_doc::Text,
+    token_names: &[String],
+) -> bool {
+    let mut changed = false;
+
+    ui.horizontal(|ui| {
+        ui.label("Content");
+    });
+    if ui
+        .add(
+            egui::TextEdit::multiline(&mut text.content)
+                .desired_rows(2)
+                .desired_width(f32::INFINITY),
+        )
+        .changed()
+    {
+        changed = true;
+    }
+
+    ui.add_space(6.0);
+    ui.horizontal(|ui| {
+        ui.label("x");
+        changed |= ui
+            .add(egui::DragValue::new(&mut text.x).speed(1.0))
+            .changed();
+        ui.label("y");
+        changed |= ui
+            .add(egui::DragValue::new(&mut text.y).speed(1.0))
+            .changed();
+    });
+
+    ui.horizontal(|ui| {
+        ui.label("Size");
+        let mut size = text.font_size.unwrap_or(16.0);
+        if ui
+            .add(
+                egui::DragValue::new(&mut size)
+                    .speed(0.5)
+                    .range(1.0..=512.0),
+            )
+            .changed()
+        {
+            text.font_size = Some(size);
+            changed = true;
+        }
+    });
+
+    ui.horizontal(|ui| {
+        ui.label("Family");
+        let mut family = text.font_family.clone().unwrap_or_default();
+        let response = ui.add(egui::TextEdit::singleline(&mut family).desired_width(140.0));
+        if response.changed() {
+            text.font_family = if family.trim().is_empty() {
+                None
+            } else {
+                Some(family)
+            };
+            changed = true;
+        }
+    });
+
+    ui.add_space(6.0);
+    changed |= draw_fill_row(ui, &mut text.base.fill, token_names);
+
+    changed
+}
+
+fn default_text() -> youeye_doc::Text {
+    let fill = Fill {
+        paint: Paint::Solid(Color {
+            r: 0.92,
+            g: 0.92,
+            b: 0.95,
+            a: 1.0,
+        }),
+        opacity: None,
+    };
+    youeye_doc::Text {
+        base: youeye_doc::NodeBase {
+            fill: Some(fill),
+            ..Default::default()
+        },
+        x: 40.0,
+        y: 40.0,
+        content: "Text".into(),
+        font_family: None,
+        font_size: Some(24.0),
+    }
 }
 
 /// Walk to the currently-selected node: if it's a container (Frame or Group)
