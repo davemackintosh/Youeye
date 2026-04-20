@@ -29,6 +29,40 @@ pub struct UiState {
     /// Scratch buffer for the in-flight rename. Populated when `renaming`
     /// transitions from `None` to `Some`.
     rename_buffer: String,
+    /// Per-token editor-kind preference, keyed by token name. Seeded on
+    /// first draw by inferring from the current value, then sticky for
+    /// the session. Not persisted to the SVG.
+    token_kinds: BTreeMap<String, ValueKind>,
+    /// Same, but for variables.
+    variable_kinds: BTreeMap<String, ValueKind>,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ValueKind {
+    Color,
+    Length,
+    Raw,
+}
+
+impl ValueKind {
+    fn detect(value: &str) -> Self {
+        let t = value.trim();
+        if parse_hint_color(t).is_some() || t.starts_with("var(--token-") {
+            return ValueKind::Color;
+        }
+        if parse_length_unit(t).is_some() {
+            return ValueKind::Length;
+        }
+        ValueKind::Raw
+    }
+
+    fn label(self) -> &'static str {
+        match self {
+            ValueKind::Color => "color",
+            ValueKind::Length => "length",
+            ValueKind::Raw => "raw",
+        }
+    }
 }
 
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
@@ -312,9 +346,20 @@ impl UiState {
         let path: Vec<usize> = match selection.len() {
             0 => {
                 ui.label(RichText::new("Nothing selected").color(Color32::GRAY));
-                became_dirty |= draw_dict_editor(ui, "Tokens", "--token-", &mut ds.doc.tokens.0);
-                became_dirty |=
-                    draw_dict_editor(ui, "Variables", "--var-", &mut ds.doc.variables.0);
+                became_dirty |= draw_dict_editor(
+                    ui,
+                    "Tokens",
+                    "--token-",
+                    &mut ds.doc.tokens.0,
+                    &mut self.token_kinds,
+                );
+                became_dirty |= draw_dict_editor(
+                    ui,
+                    "Variables",
+                    "--var-",
+                    &mut ds.doc.variables.0,
+                    &mut self.variable_kinds,
+                );
                 if became_dirty {
                     ds.dirty = true;
                 }
@@ -329,9 +374,20 @@ impl UiState {
                     )
                     .color(Color32::GRAY),
                 );
-                became_dirty |= draw_dict_editor(ui, "Tokens", "--token-", &mut ds.doc.tokens.0);
-                became_dirty |=
-                    draw_dict_editor(ui, "Variables", "--var-", &mut ds.doc.variables.0);
+                became_dirty |= draw_dict_editor(
+                    ui,
+                    "Tokens",
+                    "--token-",
+                    &mut ds.doc.tokens.0,
+                    &mut self.token_kinds,
+                );
+                became_dirty |= draw_dict_editor(
+                    ui,
+                    "Variables",
+                    "--var-",
+                    &mut ds.doc.variables.0,
+                    &mut self.variable_kinds,
+                );
                 if became_dirty {
                     ds.dirty = true;
                 }
@@ -398,8 +454,20 @@ impl UiState {
                 ui.label(RichText::new("Selection is stale.").color(Color32::GRAY));
             }
         }
-        became_dirty |= draw_dict_editor(ui, "Tokens", "--token-", &mut ds.doc.tokens.0);
-        became_dirty |= draw_dict_editor(ui, "Variables", "--var-", &mut ds.doc.variables.0);
+        became_dirty |= draw_dict_editor(
+            ui,
+            "Tokens",
+            "--token-",
+            &mut ds.doc.tokens.0,
+            &mut self.token_kinds,
+        );
+        became_dirty |= draw_dict_editor(
+            ui,
+            "Variables",
+            "--var-",
+            &mut ds.doc.variables.0,
+            &mut self.variable_kinds,
+        );
         if became_dirty {
             ds.dirty = true;
         }
@@ -414,6 +482,7 @@ fn draw_dict_editor(
     heading: &str,
     prefix: &str,
     dict: &mut BTreeMap<String, String>,
+    kinds: &mut BTreeMap<String, ValueKind>,
 ) -> bool {
     let mut changed = false;
     ui.add_space(12.0);
@@ -425,29 +494,63 @@ fn draw_dict_editor(
         // BTreeMap while drawing rows from it.
         let mut edits: Vec<DictEdit> = Vec::new();
 
+        // Same-kind tokens from the current dict, for the "pick another
+        // token" dropdowns in Color / Length rows.
+        let color_picks: Vec<(String, egui::Color32)> = originals
+            .iter()
+            .filter_map(|(n, v)| parse_hint_color(v).map(|c| (n.clone(), c)))
+            .collect();
+        let length_picks: Vec<(String, String)> = originals
+            .iter()
+            .filter(|(_, v)| parse_length_unit(v).is_some())
+            .map(|(n, v)| (n.clone(), v.clone()))
+            .collect();
+
         for (orig_name, orig_value) in &originals {
             let mut new_name = orig_name.clone();
             let mut new_value = orig_value.clone();
             let mut delete = false;
+            let kind = *kinds
+                .entry(orig_name.clone())
+                .or_insert_with(|| ValueKind::detect(orig_value));
+            let mut new_kind = kind;
+
             ui.horizontal(|ui| {
                 ui.label(prefix);
                 ui.add(egui::TextEdit::singleline(&mut new_name).desired_width(100.0));
                 ui.label(":");
-                // Inline picker when the value parses as a colour — the
-                // TextEdit stays visible so free-form editing (paste, `var()`,
-                // named colours) still works.
-                if let Some(current) = parse_hint_color(&new_value) {
-                    let mut rgba = [current.r(), current.g(), current.b(), current.a()];
-                    if ui.color_edit_button_srgba_unmultiplied(&mut rgba).changed() {
-                        new_value = format_hex_rgba(rgba[0], rgba[1], rgba[2], rgba[3]);
+
+                egui::ComboBox::from_id_salt(format!("{prefix}-kind-{orig_name}"))
+                    .selected_text(new_kind.label())
+                    .width(72.0)
+                    .show_ui(ui, |ui| {
+                        ui.selectable_value(&mut new_kind, ValueKind::Color, "color");
+                        ui.selectable_value(&mut new_kind, ValueKind::Length, "length");
+                        ui.selectable_value(&mut new_kind, ValueKind::Raw, "raw");
+                    });
+
+                match new_kind {
+                    ValueKind::Color => {
+                        draw_color_row(ui, prefix, orig_name, &mut new_value, &color_picks);
+                    }
+                    ValueKind::Length => {
+                        draw_length_row(ui, prefix, orig_name, &mut new_value, &length_picks);
+                    }
+                    ValueKind::Raw => {
+                        ui.add(egui::TextEdit::singleline(&mut new_value).desired_width(140.0));
+                        draw_value_hint(ui, &new_value);
                     }
                 }
-                ui.add(egui::TextEdit::singleline(&mut new_value).desired_width(120.0));
-                draw_value_hint(ui, &new_value);
+
                 if ui.small_button("×").on_hover_text("Delete").clicked() {
                     delete = true;
                 }
             });
+
+            if new_kind != kind {
+                kinds.insert(orig_name.clone(), new_kind);
+                changed = true;
+            }
             if delete {
                 edits.push(DictEdit::Delete(orig_name.clone()));
             } else if new_name != *orig_name {
@@ -978,6 +1081,182 @@ fn parse_hint_color(s: &str) -> Option<Color32> {
         }
     }
     None
+}
+
+/// Color-kind row editor. Swatch picker, hex TextEdit, and a "pick from
+/// other colour tokens" ComboBox whose entries show their own swatches.
+fn draw_color_row(
+    ui: &mut egui::Ui,
+    prefix: &str,
+    name: &str,
+    value: &mut String,
+    color_picks: &[(String, egui::Color32)],
+) {
+    let trimmed = value.trim().to_string();
+    let current_token = trimmed
+        .strip_prefix("var(--token-")
+        .and_then(|r| r.strip_suffix(')'))
+        .map(str::to_string);
+
+    // Swatch picker edits the concrete colour. If the value is currently a
+    // `var(...)` reference we still let the user open a picker — changing
+    // the colour breaks the reference (it becomes a hex literal).
+    let display_color = parse_hint_color(&trimmed)
+        .or_else(|| {
+            current_token
+                .as_deref()
+                .and_then(|n| color_picks.iter().find(|(k, _)| k == n).map(|(_, c)| *c))
+        })
+        .unwrap_or(egui::Color32::BLACK);
+    let mut rgba = [
+        display_color.r(),
+        display_color.g(),
+        display_color.b(),
+        display_color.a(),
+    ];
+    if ui.color_edit_button_srgba_unmultiplied(&mut rgba).changed() {
+        *value = format_hex_rgba(rgba[0], rgba[1], rgba[2], rgba[3]);
+    }
+
+    ui.add(egui::TextEdit::singleline(value).desired_width(100.0));
+
+    // Token reference dropdown.
+    let selected_label = current_token
+        .clone()
+        .unwrap_or_else(|| "(pick)".to_string());
+    egui::ComboBox::from_id_salt(format!("{prefix}-ref-{name}"))
+        .selected_text(selected_label)
+        .width(100.0)
+        .show_ui(ui, |ui| {
+            if color_picks.iter().all(|(n, _)| n == name) {
+                ui.label(RichText::new("no other colour tokens").color(Color32::GRAY));
+            }
+            for (n, c) in color_picks {
+                if n == name {
+                    continue;
+                }
+                ui.horizontal(|ui| {
+                    draw_swatch(ui, *c);
+                    if ui
+                        .selectable_label(current_token.as_deref() == Some(n.as_str()), n)
+                        .clicked()
+                    {
+                        *value = format!("var(--token-{n})");
+                    }
+                });
+            }
+        });
+}
+
+/// Length-kind row editor. Numeric DragValue, unit ComboBox, and a "pick
+/// another length token" dropdown.
+fn draw_length_row(
+    ui: &mut egui::Ui,
+    prefix: &str,
+    name: &str,
+    value: &mut String,
+    length_picks: &[(String, String)],
+) {
+    let trimmed = value.trim().to_string();
+    let current_token = trimmed
+        .strip_prefix("var(--token-")
+        .or_else(|| trimmed.strip_prefix("var(--var-"))
+        .and_then(|r| r.strip_suffix(')'))
+        .map(str::to_string);
+
+    let (mut number, mut unit) = parse_length_parts(&trimmed).unwrap_or_else(|| {
+        // Try resolving a ref for the DragValue display.
+        if let Some(tok) = &current_token
+            && let Some((_, v)) = length_picks.iter().find(|(k, _)| k == tok)
+            && let Some((n, u)) = parse_length_parts(v)
+        {
+            (n, u)
+        } else {
+            (0.0, "px".to_string())
+        }
+    });
+
+    let before = (number, unit.clone());
+    ui.add(egui::DragValue::new(&mut number).speed(0.5));
+    egui::ComboBox::from_id_salt(format!("{prefix}-unit-{name}"))
+        .selected_text(&unit)
+        .width(56.0)
+        .show_ui(ui, |ui| {
+            for u in ["px", "em", "rem", "%", "pt", "vh", "vw"] {
+                if ui.selectable_label(unit == u, u).clicked() {
+                    unit = u.to_string();
+                }
+            }
+        });
+    if (number != before.0) || (unit != before.1) {
+        *value = format_length(number, &unit);
+    }
+
+    ui.add(egui::TextEdit::singleline(value).desired_width(100.0));
+
+    let selected_label = current_token
+        .clone()
+        .unwrap_or_else(|| "(pick)".to_string());
+    egui::ComboBox::from_id_salt(format!("{prefix}-ref-{name}"))
+        .selected_text(selected_label)
+        .width(100.0)
+        .show_ui(ui, |ui| {
+            if length_picks.iter().all(|(n, _)| n == name) {
+                ui.label(RichText::new("no other length tokens").color(Color32::GRAY));
+            }
+            for (n, v) in length_picks {
+                if n == name {
+                    continue;
+                }
+                if ui
+                    .selectable_label(
+                        current_token.as_deref() == Some(n.as_str()),
+                        format!("{n} · {v}"),
+                    )
+                    .clicked()
+                {
+                    *value = format!("var(--token-{n})");
+                }
+            }
+        });
+}
+
+fn draw_swatch(ui: &mut egui::Ui, color: egui::Color32) {
+    let (rect, _) = ui.allocate_exact_size(egui::vec2(14.0, 14.0), egui::Sense::hover());
+    ui.painter().rect_filled(rect, 2.0, color);
+    ui.painter().rect_stroke(
+        rect,
+        2.0,
+        egui::Stroke::new(1.0, Color32::BLACK),
+        egui::StrokeKind::Inside,
+    );
+}
+
+/// Parse `"12.5px"` into `(12.5, "px")`. Returns `None` when the string
+/// doesn't start with a number.
+fn parse_length_parts(s: &str) -> Option<(f64, String)> {
+    let t = s.trim();
+    let end = t
+        .find(|c: char| {
+            !(c.is_ascii_digit() || c == '.' || c == '-' || c == '+' || c == 'e' || c == 'E')
+        })
+        .unwrap_or(t.len());
+    let number: f64 = t[..end].parse().ok()?;
+    let unit = t[end..].trim().to_string();
+    Some((number, if unit.is_empty() { "px".into() } else { unit }))
+}
+
+fn format_length(number: f64, unit: &str) -> String {
+    let rounded = if (number - number.round()).abs() < 1e-9 {
+        format!("{}", number as i64)
+    } else {
+        format!("{number}")
+    };
+    if unit.is_empty() {
+        rounded
+    } else {
+        format!("{rounded}{unit}")
+    }
 }
 
 /// Emit `#rrggbb` if `a == 255`, else `#rrggbbaa`.
