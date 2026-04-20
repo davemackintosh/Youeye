@@ -79,12 +79,13 @@ impl AppState {
         let (device, queue) = pollster::block_on(adapter.request_device(&wgpu::DeviceDescriptor {
             label: Some("youeye device"),
             required_features: wgpu::Features::empty(),
-            required_limits: wgpu::Limits::downlevel_defaults(),
+            required_limits: adapter.limits(),
             memory_hints: wgpu::MemoryHints::default(),
             trace: wgpu::Trace::default(),
             experimental_features: wgpu::ExperimentalFeatures::default(),
         }))?;
 
+        let max_dim = device.limits().max_texture_dimension_2d;
         let size = window.inner_size();
         let caps = surface.get_capabilities(&adapter);
         let format = caps
@@ -96,8 +97,8 @@ impl AppState {
         let surface_config = wgpu::SurfaceConfiguration {
             usage: wgpu::TextureUsages::RENDER_ATTACHMENT,
             format,
-            width: size.width.max(1),
-            height: size.height.max(1),
+            width: size.width.clamp(1, max_dim),
+            height: size.height.clamp(1, max_dim),
             present_mode: wgpu::PresentMode::AutoVsync,
             alpha_mode: caps.alpha_modes[0],
             view_formats: vec![],
@@ -138,8 +139,9 @@ impl AppState {
         if new_size.width == 0 || new_size.height == 0 {
             return;
         }
-        self.surface_config.width = new_size.width;
-        self.surface_config.height = new_size.height;
+        let max_dim = self.device.limits().max_texture_dimension_2d;
+        self.surface_config.width = new_size.width.min(max_dim);
+        self.surface_config.height = new_size.height.min(max_dim);
         self.surface.configure(&self.device, &self.surface_config);
     }
 
