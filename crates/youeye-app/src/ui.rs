@@ -62,18 +62,41 @@ impl UiState {
                 });
             });
 
+        let mut doc_state = doc_state;
+        let mut pending_adds: Vec<Node> = Vec::new();
+
         egui::SidePanel::left("layers")
             .resizable(true)
             .default_width(240.0)
             .show(ctx, |ui| {
                 ui.heading("Layers");
                 ui.separator();
+
+                let doc_open = doc_state.is_some();
+                if doc_open {
+                    ui.horizontal_wrapped(|ui| {
+                        if ui.button("+Frame").clicked() {
+                            pending_adds.push(Node::Frame(default_frame()));
+                        }
+                        if ui.button("+Rect").clicked() {
+                            pending_adds.push(Node::Rect(default_rect()));
+                        }
+                        if ui.button("+Ellipse").clicked() {
+                            pending_adds.push(Node::Ellipse(default_ellipse()));
+                        }
+                        if ui.button("+Group").clicked() {
+                            pending_adds.push(Node::Group(default_group()));
+                        }
+                    });
+                    ui.separator();
+                }
+
                 match doc_state.as_deref() {
                     None => {
                         ui.label(RichText::new("No screen open").color(Color32::GRAY));
                     }
                     Some(ds) if ds.doc.children.is_empty() => {
-                        ui.label(RichText::new("(empty document)").color(Color32::GRAY));
+                        ui.label(RichText::new("(empty — add a shape above)").color(Color32::GRAY));
                     }
                     Some(ds) => {
                         let mut path = Vec::new();
@@ -86,11 +109,30 @@ impl UiState {
                 }
             });
 
+        // Apply pending adds from the layers panel before the inspector
+        // captures doc_state. New nodes go into the currently-selected
+        // container if it's a Frame or Group, otherwise at document root.
+        if !pending_adds.is_empty()
+            && let Some(ds) = doc_state.as_deref_mut()
+        {
+            let container = selected_container_path(&ds.doc, self.selection.as_deref());
+            let new_count = pending_adds.len();
+            let base_index = insert_into_container(&mut ds.doc, container.as_deref(), pending_adds);
+            ds.dirty = true;
+            // Select the first newly-added node so the inspector shows it.
+            if let Some(base) = base_index {
+                let mut new_path = container.unwrap_or_default();
+                new_path.push(base);
+                self.selection = Some(new_path);
+            }
+            let _ = new_count;
+        }
+
         egui::SidePanel::right("inspector")
             .resizable(true)
             .default_width(280.0)
             .show(ctx, |ui| {
-                self.draw_inspector(ui, doc_state);
+                self.draw_inspector(ui, doc_state.as_deref_mut());
             });
 
         egui::TopBottomPanel::bottom("status").show(ctx, |ui| {
@@ -556,6 +598,110 @@ fn node_label(node: &Node) -> String {
 
 fn supports_paint(node: &Node) -> bool {
     matches!(node, Node::Rect(_) | Node::Ellipse(_) | Node::Path(_))
+}
+
+fn default_frame() -> Frame {
+    Frame {
+        x: 0.0,
+        y: 0.0,
+        width: 320.0,
+        height: 240.0,
+        ..Default::default()
+    }
+}
+
+fn default_rect() -> youeye_doc::Rect {
+    let fill = Fill {
+        paint: Paint::Solid(Color {
+            r: 0.33,
+            g: 0.53,
+            b: 0.98,
+            a: 1.0,
+        }),
+        opacity: None,
+    };
+    youeye_doc::Rect {
+        base: youeye_doc::NodeBase {
+            fill: Some(fill),
+            ..Default::default()
+        },
+        x: 0.0,
+        y: 0.0,
+        width: 120.0,
+        height: 80.0,
+        rx: 0.0,
+        ry: 0.0,
+    }
+}
+
+fn default_ellipse() -> youeye_doc::Ellipse {
+    let fill = Fill {
+        paint: Paint::Solid(Color {
+            r: 1.0,
+            g: 0.55,
+            b: 0.2,
+            a: 1.0,
+        }),
+        opacity: None,
+    };
+    youeye_doc::Ellipse {
+        base: youeye_doc::NodeBase {
+            fill: Some(fill),
+            ..Default::default()
+        },
+        cx: 50.0,
+        cy: 50.0,
+        rx: 50.0,
+        ry: 50.0,
+    }
+}
+
+fn default_group() -> youeye_doc::Group {
+    youeye_doc::Group::default()
+}
+
+/// Walk to the currently-selected node: if it's a container (Frame or Group)
+/// return its path so new nodes go inside. Otherwise fall back to the
+/// nearest containing ancestor (or `None` for doc root).
+fn selected_container_path(
+    doc: &youeye_doc::Document,
+    selection: Option<&[usize]>,
+) -> Option<Vec<usize>> {
+    let sel = selection?;
+    let mut path = sel.to_vec();
+    loop {
+        match doc.node_at(&path) {
+            Some(Node::Frame(_)) | Some(Node::Group(_)) => return Some(path),
+            _ => {
+                if path.pop().is_none() {
+                    return None;
+                }
+            }
+        }
+    }
+}
+
+/// Insert `new_nodes` as the last children of the container addressed by
+/// `path` (or of the document root when `path` is `None`). Returns the
+/// index of the first newly inserted node, or `None` if insertion failed.
+fn insert_into_container(
+    doc: &mut youeye_doc::Document,
+    path: Option<&[usize]>,
+    new_nodes: Vec<Node>,
+) -> Option<usize> {
+    let container_children: &mut Vec<Node> = match path {
+        None => &mut doc.children,
+        Some(p) => match doc.node_at_mut(p)? {
+            Node::Frame(f) => &mut f.children,
+            Node::Group(g) => &mut g.children,
+            _ => return None,
+        },
+    };
+    let base = container_children.len();
+    for n in new_nodes {
+        container_children.push(n);
+    }
+    Some(base)
 }
 
 /// Walk from the document root to (but not into) the selected node, picking
