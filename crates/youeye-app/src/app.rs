@@ -181,11 +181,13 @@ impl AppState {
         // mutable one can move into the egui closure afterwards.
         {
             let canvas_doc: Option<&Document> = doc_state.as_deref().map(|s| &s.doc);
+            let canvas_selection = ui.selection.as_deref();
             if let Err(e) = self.canvas.render(
                 &self.device,
                 &self.queue,
                 &mut self.egui_renderer,
                 canvas_doc,
+                canvas_selection,
             ) {
                 warn!("canvas render: {e:?}");
             }

@@ -11,7 +11,7 @@ use crate::menu::MenuAction;
 
 #[derive(Default)]
 pub struct UiState {
-    selected_tool: Tool,
+    pub selected_tool: Tool,
     /// Path of child indices from the document root to the selected node.
     /// `None` when nothing is selected.
     pub selection: Option<Vec<usize>>,
@@ -38,6 +38,41 @@ impl UiState {
         canvas: &mut Canvas,
         doc_state: Option<&mut DocumentState>,
     ) {
+        let mut doc_state = doc_state;
+
+        // Global keyboard shortcuts. Skip when an egui text input has focus
+        // so typing "r" in a field doesn't switch tools.
+        let input_focused = ctx.memory(|m| m.focused().is_some());
+        if !input_focused {
+            ctx.input_mut(|i| {
+                for (key, tool) in [
+                    (egui::Key::V, Tool::Select),
+                    (egui::Key::R, Tool::Rect),
+                    (egui::Key::O, Tool::Ellipse),
+                    (egui::Key::F, Tool::Frame),
+                    (egui::Key::L, Tool::Line),
+                    (egui::Key::T, Tool::Text),
+                    (egui::Key::P, Tool::Pen),
+                    (egui::Key::H, Tool::Hand),
+                ] {
+                    if i.key_pressed(key) {
+                        self.selected_tool = tool;
+                    }
+                }
+                // Delete / Backspace removes the current selection.
+                if i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace) {
+                    if let (Some(path), Some(ds)) =
+                        (self.selection.clone(), doc_state.as_deref_mut())
+                    {
+                        if ds.doc.remove_at(&path) {
+                            ds.dirty = true;
+                            self.selection = None;
+                        }
+                    }
+                }
+            });
+        }
+
         egui::TopBottomPanel::top("toolbar")
             .exact_height(36.0)
             .show(ctx, |ui| {
@@ -62,7 +97,6 @@ impl UiState {
                 });
             });
 
-        let mut doc_state = doc_state;
         let mut pending_adds: Vec<Node> = Vec::new();
 
         egui::SidePanel::left("layers")
@@ -145,11 +179,19 @@ impl UiState {
             });
         });
 
+        let tool = self.selected_tool;
+        let mut canvas_dirty = false;
         egui::CentralPanel::default()
             .frame(egui::Frame::NONE)
             .show(ctx, |ui| {
-                canvas.ui(ui);
+                let doc_for_canvas = doc_state.as_deref_mut().map(|s| &mut s.doc);
+                if canvas.ui(ui, doc_for_canvas, &mut self.selection, tool) {
+                    canvas_dirty = true;
+                }
             });
+        if canvas_dirty && let Some(ds) = doc_state.as_deref_mut() {
+            ds.dirty = true;
+        }
     }
 
     fn draw_inspector(&self, ui: &mut egui::Ui, doc_state: Option<&mut DocumentState>) {

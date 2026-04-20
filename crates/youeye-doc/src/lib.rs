@@ -72,6 +72,30 @@ impl Document {
         }
         Some(node)
     }
+
+    /// Remove the node addressed by `path`. Returns `true` if a node was
+    /// removed. Empty paths are a no-op.
+    pub fn remove_at(&mut self, path: &[usize]) -> bool {
+        let Some((last, parent_path)) = path.split_last() else {
+            return false;
+        };
+        let parent_children: &mut Vec<Node> = if parent_path.is_empty() {
+            &mut self.children
+        } else {
+            let Some(parent) = self.node_at_mut(parent_path) else {
+                return false;
+            };
+            let Some(children) = node_children_mut(parent) else {
+                return false;
+            };
+            children
+        };
+        if *last >= parent_children.len() {
+            return false;
+        }
+        parent_children.remove(*last);
+        true
+    }
 }
 
 fn node_children(node: &Node) -> Option<&Vec<Node>> {

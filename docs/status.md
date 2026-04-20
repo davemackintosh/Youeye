@@ -11,6 +11,7 @@ Last updated: **2026-04-20**.
 **Phase 3 — Auto-layout (taffy)** ✅ complete (slices A, B, C).
 **Phase 4 — Tokens + variables UI with enforcement** 🚧 slices A+B+C done, D deferred.
 **Phase 5 — Rulers + constraints** ✅ core done (pin solver deferred to direct-math; kasuari upgrade pending real multi-constraint scenarios).
+**Phase 6 — Primitive tools** 🚧 click-drag creation + select/move/resize done; pen, text, line, boolean ops, rotation deferred.
 
 - 1a — Workspace scaffold, egui + winit + wgpu window with chrome (toolbar, layers, inspector, status bar, menu bar).
 - 1b — Vello canvas with pan/zoom, rendered into an offscreen `Rgba8Unorm` texture registered as an egui native texture.
@@ -160,9 +161,23 @@ Sliced A/B/C like phase 2. **Decision:** Frame is a nested `<svg>` on wire — i
 
 ### Phase 6 — Primitive tools
 
-- Rect, ellipse, line, polygon, text, pen.
+**Done ✅**
+- Canvas is now interactive. Click-drag with `Tool::Rect` / `Tool::Ellipse` / `Tool::Frame` creates a new shape at doc root, sized by the drag bounds. Live dashed preview during the drag; commits on release (min 0.5×0.5 to avoid stray clicks).
+- `Tool::Select` + click hit-tests the document tree and updates selection. Hit-test recurses into Group/Frame children; inner nodes win. Click on empty space clears selection.
+- Select + drag on a selected shape translates it in real time (doc mutated each frame; delta scaled from screen to world by camera).
+- Select + drag on a resize handle of the selected shape resizes it. 8 handles (corners + edge midpoints) drawn in world space at a screen-constant size. Works for Rect / Ellipse / Frame. Ellipse resize uses the bounding box (rx/ry/cx/cy adjusted accordingly).
+- Keyboard shortcuts: `V` Select, `R` Rect, `O` Ellipse, `F` Frame, `L` Line, `T` Text, `P` Pen, `H` Hand. Input-focus-aware (won't fire while a text field has focus). `Delete` / `Backspace` removes selection and clears it.
+- `Tool::Hand` pans (same behaviour as Space-held pan).
+- Selection outline (solid blue) drawn on top of the shape; lives in world space so it scales with zoom sensibly.
+
+**Still deferred**
+- `Tool::Line` / `Tool::Text` / `Tool::Pen` — no canvas behaviour yet. Pen needs path authoring UX, text needs parley.
 - Boolean ops on paths (`kurbo` / `lyon`).
-- Transform handles on the canvas (move / resize / rotate).
+- Rotation handle.
+- Undo/redo (every frame during a drag currently marks the doc dirty; one edit per drag for undo is a separate design).
+- Marquee selection.
+- Snap-to-ruler or snap-to-grid when dragging (rhythm snap could leverage `--var-rhythm`).
+- Multi-select and keyboard nudge.
 
 ### Phase 7 — Components
 
