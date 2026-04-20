@@ -136,7 +136,7 @@ impl Canvas {
         queue: &wgpu::Queue,
         egui_renderer: &mut egui_wgpu::Renderer,
         doc: Option<&Document>,
-        selection: Option<&[usize]>,
+        selection: &[Vec<usize>],
     ) -> Result<()> {
         let [w, h] = self.pending_size_px;
         if w == 0 || h == 0 {
@@ -202,7 +202,7 @@ impl Canvas {
         &mut self,
         ui: &mut egui::Ui,
         doc: Option<&mut Document>,
-        selection: &mut Option<Vec<usize>>,
+        selection: &mut Vec<Vec<usize>>,
         tool: Tool,
     ) -> bool {
         let rect = ui.available_rect_before_wrap();
@@ -221,6 +221,7 @@ impl Canvas {
 
         let (scroll_delta, modifiers, pointer) =
             ui.input(|i| (i.smooth_scroll_delta, i.modifiers, i.pointer.hover_pos()));
+        let shift_held = modifiers.shift;
 
         let pointer_world =
             pointer.map(|p| self.screen_to_world(Vec2::new(p.x as f64, p.y as f64), rect));
@@ -235,7 +236,14 @@ impl Canvas {
             let d = response.drag_delta();
             self.camera.translate += Vec2::new(d.x as f64, d.y as f64);
         } else {
-            mutated |= self.handle_tool_interaction(&response, pointer_world, tool, doc, selection);
+            mutated |= self.handle_tool_interaction(
+                &response,
+                pointer_world,
+                tool,
+                doc,
+                selection,
+                shift_held,
+            );
         }
 
         if held(&modifiers, Modifier::Command)
@@ -274,7 +282,8 @@ impl Canvas {
         pointer_world: Option<Vec2>,
         tool: Tool,
         mut doc: Option<&mut Document>,
-        selection: &mut Option<Vec<usize>>,
+        selection: &mut Vec<Vec<usize>>,
+        shift_held: bool,
     ) -> bool {
         let mut mutated = false;
 
@@ -282,7 +291,7 @@ impl Canvas {
         if response.drag_started_by(egui::PointerButton::Primary)
             && let Some(world) = pointer_world
         {
-            self.drag = self.start_drag(world, tool, doc.as_deref(), selection);
+            self.drag = self.start_drag(world, tool, doc.as_deref(), selection, shift_held);
         }
 
         // Track / apply drag progress.
@@ -290,16 +299,25 @@ impl Canvas {
             && let Some(world) = pointer_world
         {
             match self.drag.as_mut() {
-                Some(Drag::Creating { current, .. }) => {
-                    *current = world;
+                Some(Drag::Creating { current, start, .. }) => {
+                    if shift_held {
+                        let dx = world.x - start.x;
+                        let dy = world.y - start.y;
+                        let size = dx.abs().max(dy.abs());
+                        let sx = if dx == 0.0 { 1.0 } else { dx.signum() };
+                        let sy = if dy == 0.0 { 1.0 } else { dy.signum() };
+                        *current = Vec2::new(start.x + size * sx, start.y + size * sy);
+                    } else {
+                        *current = world;
+                    }
                 }
                 Some(Drag::Moving) => {
-                    if let (Some(doc), Some(path)) = (doc.as_deref_mut(), selection.as_deref()) {
+                    if let Some(doc) = doc.as_deref_mut() {
                         let delta = Vec2::new(
                             response.drag_delta().x as f64 / self.camera.scale,
                             response.drag_delta().y as f64 / self.camera.scale,
                         );
-                        if translate_node_at(doc, path, delta) {
+                        if translate_paths(doc, selection, delta) {
                             mutated = true;
                         }
                     }
@@ -310,9 +328,10 @@ impl Canvas {
                     start_bounds,
                 }) => {
                     let delta = world - *start_world;
-                    let new_bounds = resize_bounds(*start_bounds, *handle, delta);
-                    if let (Some(doc), Some(path)) = (doc.as_deref_mut(), selection.as_deref())
-                        && set_bounds(doc, path, new_bounds)
+                    let new_bounds = resize_bounds(*start_bounds, *handle, delta, shift_held);
+                    if let Some(doc) = doc.as_deref_mut()
+                        && let Some(primary) = selection.first().cloned()
+                        && set_bounds(doc, &primary, new_bounds)
                     {
                         mutated = true;
                     }
@@ -335,7 +354,7 @@ impl Canvas {
             if bounds.w > 0.5 && bounds.h > 0.5 {
                 let node = create_shape(kind, bounds);
                 doc.children.push(node);
-                *selection = Some(vec![doc.children.len() - 1]);
+                *selection = vec![vec![doc.children.len() - 1]];
                 mutated = true;
             }
         }
@@ -349,7 +368,8 @@ impl Canvas {
             match tool {
                 Tool::Select => {
                     if let Some(doc) = doc.as_deref() {
-                        *selection = hit_test(doc, world);
+                        let hit = hit_test(doc, world);
+                        update_selection_from_click(selection, hit, shift_held);
                     }
                 }
                 Tool::Text => {
@@ -374,7 +394,7 @@ impl Canvas {
                             font_size: Some(24.0),
                         };
                         doc.children.push(Node::Text(text));
-                        *selection = Some(vec![doc.children.len() - 1]);
+                        *selection = vec![vec![doc.children.len() - 1]];
                         mutated = true;
                     }
                 }
@@ -391,7 +411,8 @@ impl Canvas {
         world: Vec2,
         tool: Tool,
         doc: Option<&Document>,
-        selection: &mut Option<Vec<usize>>,
+        selection: &mut Vec<Vec<usize>>,
+        shift_held: bool,
     ) -> Option<Drag> {
         match tool {
             Tool::Rect => Some(Drag::Creating {
@@ -411,10 +432,10 @@ impl Canvas {
             }),
             Tool::Select => {
                 let doc = doc?;
-                // If a shape is already selected and the pointer is on one of
-                // its handles, start a resize.
-                if let Some(path) = selection.as_deref()
-                    && let Some(bounds) = world_bounds_of(doc, path)
+                // If the pointer is on a handle of the primary selection,
+                // start a resize.
+                if let Some(primary) = selection.first().cloned()
+                    && let Some(bounds) = world_bounds_of(doc, &primary)
                     && let Some(handle) = hit_handle(bounds, world, self.camera.scale)
                 {
                     return Some(Drag::Resizing {
@@ -423,10 +444,28 @@ impl Canvas {
                         start_bounds: bounds,
                     });
                 }
-                // Otherwise: hit-test to pick a shape, start moving it.
+                // Otherwise hit-test for a shape under the cursor and
+                // either keep the current selection (if the hit is already
+                // selected — drag moves the whole group) or update it.
                 let hit = hit_test(doc, world);
-                *selection = hit.clone();
-                hit.map(|_| Drag::Moving)
+                match hit {
+                    Some(path) => {
+                        if selection.iter().any(|s| *s == path) {
+                            // Already selected — keep selection, start moving.
+                        } else if shift_held {
+                            selection.push(path);
+                        } else {
+                            *selection = vec![path];
+                        }
+                        Some(Drag::Moving)
+                    }
+                    None => {
+                        if !shift_held {
+                            selection.clear();
+                        }
+                        None
+                    }
+                }
             }
             _ => None,
         }
@@ -445,7 +484,7 @@ impl Canvas {
     /// Build the frame's scene: the background grid + crosshair, then the
     /// document tree on top when a doc is loaded, plus any drag preview and
     /// selection decorations.
-    fn build_scene(&mut self, doc: Option<&Document>, selection: Option<&[usize]>) {
+    fn build_scene(&mut self, doc: Option<&Document>, selection: &[Vec<usize>]) {
         self.scene.reset();
         // Camera is in logical pixels; the final scale(ppp) converts to the
         // texture's physical pixel space.
@@ -483,10 +522,10 @@ impl Canvas {
         if let Some(doc) = doc {
             youeye_render::build(&mut self.scene, doc, xform);
 
-            if let Some(path) = selection
-                && let Some(b) = world_bounds_of(doc, path)
-            {
-                self.draw_selection_decor(b, xform);
+            for path in selection {
+                if let Some(b) = world_bounds_of(doc, path) {
+                    self.draw_selection_decor(b, xform);
+                }
             }
         }
 
@@ -753,6 +792,57 @@ fn translate_node_at(doc: &mut Document, path: &[usize], delta: Vec2) -> bool {
     true
 }
 
+/// Apply `delta` to each selected node. When one selection path is an
+/// ancestor of another, the descendant is skipped so the node doesn't get
+/// double-translated through its parent.
+pub(crate) fn translate_paths(doc: &mut Document, paths: &[Vec<usize>], delta: Vec2) -> bool {
+    let mut any = false;
+    for path in filter_non_descendants(paths) {
+        if translate_node_at(doc, &path, delta) {
+            any = true;
+        }
+    }
+    any
+}
+
+fn filter_non_descendants(paths: &[Vec<usize>]) -> Vec<Vec<usize>> {
+    let mut out = Vec::new();
+    'outer: for path in paths {
+        for other in paths {
+            if other.len() < path.len() && path.starts_with(other) {
+                continue 'outer;
+            }
+        }
+        out.push(path.clone());
+    }
+    out
+}
+
+pub(crate) fn update_selection_from_click(
+    selection: &mut Vec<Vec<usize>>,
+    hit: Option<Vec<usize>>,
+    shift_held: bool,
+) {
+    match hit {
+        Some(path) => {
+            if shift_held {
+                if let Some(idx) = selection.iter().position(|s| *s == path) {
+                    selection.remove(idx);
+                } else {
+                    selection.push(path);
+                }
+            } else {
+                *selection = vec![path];
+            }
+        }
+        None => {
+            if !shift_held {
+                selection.clear();
+            }
+        }
+    }
+}
+
 fn translate_node(node: &mut Node, d: Vec2) {
     match node {
         Node::Rect(r) => {
@@ -879,42 +969,92 @@ fn hit_handle(b: ShapeBounds, world: Vec2, camera_scale: f64) -> Option<Handle> 
     None
 }
 
-fn resize_bounds(start: ShapeBounds, handle: Handle, delta: Vec2) -> ShapeBounds {
-    let mut left = start.x;
-    let mut top = start.y;
-    let mut right = start.x + start.w;
-    let mut bottom = start.y + start.h;
-    match handle {
-        Handle::Nw => {
-            left += delta.x;
-            top += delta.y;
+fn resize_bounds(
+    start: ShapeBounds,
+    handle: Handle,
+    delta: Vec2,
+    lock_aspect: bool,
+) -> ShapeBounds {
+    let is_corner = matches!(handle, Handle::Nw | Handle::Ne | Handle::Se | Handle::Sw);
+    let (mut left, mut top) = (start.x, start.y);
+    let (mut right, mut bottom) = (start.x + start.w, start.y + start.h);
+
+    if lock_aspect && is_corner {
+        // Map each corner to the sign convention where a positive `rel`
+        // means "user is enlarging." Pick whichever axis has the larger
+        // relative drag; the other axis follows proportionally.
+        let orig_w = start.w.max(0.001);
+        let orig_h = start.h.max(0.001);
+        let (sx, sy) = match handle {
+            Handle::Se => (1.0, 1.0),
+            Handle::Sw => (-1.0, 1.0),
+            Handle::Nw => (-1.0, -1.0),
+            Handle::Ne => (1.0, -1.0),
+            _ => unreachable!(),
+        };
+        let rel_x = delta.x * sx / orig_w;
+        let rel_y = delta.y * sy / orig_h;
+        let rel = if rel_x.abs() > rel_y.abs() {
+            rel_x
+        } else {
+            rel_y
+        };
+        let new_w = orig_w * (1.0 + rel);
+        let new_h = orig_h * (1.0 + rel);
+        let dw = new_w - start.w;
+        let dh = new_h - start.h;
+        match handle {
+            Handle::Se => {
+                right += dw;
+                bottom += dh;
+            }
+            Handle::Sw => {
+                left -= dw;
+                bottom += dh;
+            }
+            Handle::Nw => {
+                left -= dw;
+                top -= dh;
+            }
+            Handle::Ne => {
+                right += dw;
+                top -= dh;
+            }
+            _ => unreachable!(),
         }
-        Handle::N => {
-            top += delta.y;
-        }
-        Handle::Ne => {
-            right += delta.x;
-            top += delta.y;
-        }
-        Handle::E => {
-            right += delta.x;
-        }
-        Handle::Se => {
-            right += delta.x;
-            bottom += delta.y;
-        }
-        Handle::S => {
-            bottom += delta.y;
-        }
-        Handle::Sw => {
-            left += delta.x;
-            bottom += delta.y;
-        }
-        Handle::W => {
-            left += delta.x;
+    } else {
+        match handle {
+            Handle::Nw => {
+                left += delta.x;
+                top += delta.y;
+            }
+            Handle::N => {
+                top += delta.y;
+            }
+            Handle::Ne => {
+                right += delta.x;
+                top += delta.y;
+            }
+            Handle::E => {
+                right += delta.x;
+            }
+            Handle::Se => {
+                right += delta.x;
+                bottom += delta.y;
+            }
+            Handle::S => {
+                bottom += delta.y;
+            }
+            Handle::Sw => {
+                left += delta.x;
+                bottom += delta.y;
+            }
+            Handle::W => {
+                left += delta.x;
+            }
         }
     }
-    // Prevent the shape from flipping through zero — clamp on each axis.
+
     if right < left {
         std::mem::swap(&mut left, &mut right);
     }

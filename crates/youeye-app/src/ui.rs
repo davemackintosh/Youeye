@@ -12,9 +12,11 @@ use crate::menu::MenuAction;
 #[derive(Default)]
 pub struct UiState {
     pub selected_tool: Tool,
-    /// Path of child indices from the document root to the selected node.
-    /// `None` when nothing is selected.
-    pub selection: Option<Vec<usize>>,
+    /// Paths from the document root to each selected node. Empty = nothing
+    /// selected. The first entry is the "primary" selection — the one the
+    /// inspector treats as the active target. Operations that don't need a
+    /// single target (delete, drag-move) act on all entries.
+    pub selection: Vec<Vec<usize>>,
 }
 
 #[derive(Default, Debug, Clone, Copy, PartialEq, Eq)]
@@ -59,16 +61,25 @@ impl UiState {
                         self.selected_tool = tool;
                     }
                 }
-                // Delete / Backspace removes the current selection.
-                if i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace) {
-                    if let (Some(path), Some(ds)) =
-                        (self.selection.clone(), doc_state.as_deref_mut())
-                    {
-                        if ds.doc.remove_at(&path) {
-                            ds.dirty = true;
-                            self.selection = None;
-                        }
+                // Delete / Backspace removes all selected nodes.
+                if (i.key_pressed(egui::Key::Delete) || i.key_pressed(egui::Key::Backspace))
+                    && !self.selection.is_empty()
+                    && let Some(ds) = doc_state.as_deref_mut()
+                {
+                    let paths = std::mem::take(&mut self.selection);
+                    if delete_paths(&mut ds.doc, &paths) {
+                        ds.dirty = true;
                     }
+                }
+
+                // Group selected siblings — ⌘/Ctrl + G.
+                if i.consume_key(egui::Modifiers::COMMAND, egui::Key::G)
+                    && self.selection.len() >= 2
+                    && let Some(ds) = doc_state.as_deref_mut()
+                    && let Some(new_path) = group_selection(&mut ds.doc, &self.selection)
+                {
+                    ds.dirty = true;
+                    self.selection = vec![new_path];
                 }
             });
         }
@@ -152,7 +163,8 @@ impl UiState {
         if !pending_adds.is_empty()
             && let Some(ds) = doc_state.as_deref_mut()
         {
-            let container = selected_container_path(&ds.doc, self.selection.as_deref());
+            let primary = self.selection.first().map(|p| p.as_slice());
+            let container = selected_container_path(&ds.doc, primary);
             let new_count = pending_adds.len();
             let base_index = insert_into_container(&mut ds.doc, container.as_deref(), pending_adds);
             ds.dirty = true;
@@ -160,7 +172,7 @@ impl UiState {
             if let Some(base) = base_index {
                 let mut new_path = container.unwrap_or_default();
                 new_path.push(base);
-                self.selection = Some(new_path);
+                self.selection = vec![new_path];
             }
             let _ = new_count;
         }
@@ -223,14 +235,34 @@ impl UiState {
 
         let selection = self.selection.clone();
         let mut became_dirty = false;
-        let Some(path) = selection else {
-            ui.label(RichText::new("Nothing selected").color(Color32::GRAY));
-            became_dirty |= draw_dict_editor(ui, "Tokens", "--token-", &mut ds.doc.tokens.0);
-            became_dirty |= draw_dict_editor(ui, "Variables", "--var-", &mut ds.doc.variables.0);
-            if became_dirty {
-                ds.dirty = true;
+        let path: Vec<usize> = match selection.len() {
+            0 => {
+                ui.label(RichText::new("Nothing selected").color(Color32::GRAY));
+                became_dirty |= draw_dict_editor(ui, "Tokens", "--token-", &mut ds.doc.tokens.0);
+                became_dirty |=
+                    draw_dict_editor(ui, "Variables", "--var-", &mut ds.doc.variables.0);
+                if became_dirty {
+                    ds.dirty = true;
+                }
+                return;
             }
-            return;
+            1 => selection.into_iter().next().unwrap(),
+            n => {
+                ui.label(RichText::new(format!("{n} items selected")).strong());
+                ui.label(
+                    RichText::new(
+                        "Multi-select: drag to move, Delete to remove, ⌘/Ctrl+G to group.",
+                    )
+                    .color(Color32::GRAY),
+                );
+                became_dirty |= draw_dict_editor(ui, "Tokens", "--token-", &mut ds.doc.tokens.0);
+                became_dirty |=
+                    draw_dict_editor(ui, "Variables", "--var-", &mut ds.doc.variables.0);
+                if became_dirty {
+                    ds.dirty = true;
+                }
+                return;
+            }
         };
 
         let token_names: Vec<String> = ds.doc.tokens.0.keys().cloned().collect();
@@ -597,15 +629,28 @@ fn draw_layer(
     ui: &mut egui::Ui,
     node: &Node,
     path: &mut Vec<usize>,
-    selection: &mut Option<Vec<usize>>,
+    selection: &mut Vec<Vec<usize>>,
 ) {
     let label = node_label(node);
-    let is_selected = selection.as_deref() == Some(path.as_slice());
+    let is_selected = selection.iter().any(|s| s.as_slice() == path.as_slice());
+    let shift_held = ui.input(|i| i.modifiers.shift);
 
     let children = match node {
         Node::Group(g) => Some(&g.children),
         Node::Frame(f) => Some(&f.children),
         _ => None,
+    };
+
+    let toggle = |selection: &mut Vec<Vec<usize>>, path: Vec<usize>| {
+        if shift_held {
+            if let Some(idx) = selection.iter().position(|s| *s == path) {
+                selection.remove(idx);
+            } else {
+                selection.push(path);
+            }
+        } else {
+            *selection = vec![path];
+        }
     };
 
     if let Some(children) = children {
@@ -614,7 +659,7 @@ fn draw_layer(
             .default_open(true)
             .show(ui, |ui| {
                 if ui.selectable_label(is_selected, "(this layer)").clicked() {
-                    *selection = Some(path.clone());
+                    toggle(selection, path.clone());
                 }
                 for (i, child) in children.iter().enumerate() {
                     path.push(i);
@@ -623,7 +668,7 @@ fn draw_layer(
                 }
             });
     } else if ui.selectable_label(is_selected, label).clicked() {
-        *selection = Some(path.clone());
+        toggle(selection, path.clone());
     }
 }
 
@@ -652,6 +697,75 @@ fn node_label(node: &Node) -> String {
 
 fn supports_paint(node: &Node) -> bool {
     matches!(node, Node::Rect(_) | Node::Ellipse(_) | Node::Path(_))
+}
+
+/// Delete every selected node. Sort by path length descending then
+/// lexicographically so earlier removals don't invalidate later paths.
+/// Returns true if any node was removed.
+fn delete_paths(doc: &mut youeye_doc::Document, paths: &[Vec<usize>]) -> bool {
+    // Skip paths whose ancestor is also in the set — the ancestor's removal
+    // takes the descendant with it.
+    let mut targets: Vec<Vec<usize>> = paths
+        .iter()
+        .filter(|p| {
+            !paths
+                .iter()
+                .any(|other| other.len() < p.len() && p.starts_with(other))
+        })
+        .cloned()
+        .collect();
+    // Sort so siblings with a higher index get removed first (stable indices).
+    targets.sort_by(|a, b| b.cmp(a));
+    let mut any = false;
+    for path in targets {
+        if doc.remove_at(&path) {
+            any = true;
+        }
+    }
+    any
+}
+
+/// Group selected sibling nodes into a new `Group`. All selected paths
+/// must share a parent container. On success, returns the path to the
+/// new Group and writes it into the doc. Non-sibling selections are a
+/// no-op and return `None`.
+fn group_selection(doc: &mut youeye_doc::Document, selection: &[Vec<usize>]) -> Option<Vec<usize>> {
+    if selection.len() < 2 {
+        return None;
+    }
+    let (last0, parent_path) = selection[0].split_last()?;
+    let parent_path = parent_path.to_vec();
+    let mut indices: Vec<usize> = Vec::with_capacity(selection.len());
+    indices.push(*last0);
+    for p in &selection[1..] {
+        let (last, this_parent) = p.split_last()?;
+        if this_parent != parent_path.as_slice() {
+            return None;
+        }
+        indices.push(*last);
+    }
+    indices.sort();
+    indices.dedup();
+
+    let parent_children = doc.container_children_mut(&parent_path)?;
+    let mut taken: Vec<Node> = Vec::with_capacity(indices.len());
+    for &i in indices.iter().rev() {
+        if i >= parent_children.len() {
+            return None;
+        }
+        taken.push(parent_children.remove(i));
+    }
+    taken.reverse();
+    let insert_at = indices[0];
+    let new_group = Node::Group(youeye_doc::Group {
+        base: youeye_doc::NodeBase::default(),
+        children: taken,
+    });
+    parent_children.insert(insert_at, new_group);
+
+    let mut new_path = parent_path;
+    new_path.push(insert_at);
+    Some(new_path)
 }
 
 fn default_frame() -> Frame {

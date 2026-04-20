@@ -82,22 +82,26 @@ impl Document {
         let Some((last, parent_path)) = path.split_last() else {
             return false;
         };
-        let parent_children: &mut Vec<Node> = if parent_path.is_empty() {
-            &mut self.children
-        } else {
-            let Some(parent) = self.node_at_mut(parent_path) else {
-                return false;
-            };
-            let Some(children) = node_children_mut(parent) else {
-                return false;
-            };
-            children
+        let Some(parent_children) = self.container_children_mut(parent_path) else {
+            return false;
         };
         if *last >= parent_children.len() {
             return false;
         }
         parent_children.remove(*last);
         true
+    }
+
+    /// Mutable access to the children vec of the container addressed by
+    /// `path`. Empty `path` means the document root. Returns `None` if the
+    /// path doesn't reach a container (Group, Frame, Component) or runs off
+    /// the end of the tree.
+    pub fn container_children_mut(&mut self, path: &[usize]) -> Option<&mut Vec<Node>> {
+        if path.is_empty() {
+            return Some(&mut self.children);
+        }
+        let node = self.node_at_mut(path)?;
+        node_children_mut(node)
     }
 }
 
