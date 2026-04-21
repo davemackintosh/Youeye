@@ -69,6 +69,24 @@ fn remember_color(recent: &mut Vec<[u8; 4]>, rgba: [u8; 4]) {
     }
 }
 
+/// Detects the moment a color-edit popup transitions from open → closed.
+///
+/// egui's `color_edit_button_*` opens its full picker in a popup keyed by
+/// `response.id.with("popup")`. We store the previous open-state in
+/// `egui::Context::data_mut` (temp scope, keyed by the popup id) and
+/// compare to the current state. Returns `true` only on the frame the
+/// popup just finished closing — exactly what we want for "user committed
+/// a colour choice," without firing on every intermediate slider drag.
+fn popup_just_closed(ui: &mut egui::Ui, response: &egui::Response) -> bool {
+    let popup_id = response.id.with("popup");
+    let is_open = egui::Popup::is_id_open(ui.ctx(), popup_id);
+    let was_open: bool = ui
+        .ctx()
+        .data(|d| d.get_temp::<bool>(popup_id).unwrap_or(false));
+    ui.ctx().data_mut(|d| d.insert_temp(popup_id, is_open));
+    was_open && !is_open
+}
+
 fn rgba_f_to_u8(rgba: [f32; 4]) -> [u8; 4] {
     [
         (rgba[0].clamp(0.0, 1.0) * 255.0).round() as u8,
@@ -1311,10 +1329,11 @@ fn draw_color_row(
     if color_resp.changed() {
         *value = format_hex_rgba(rgba[0], rgba[1], rgba[2], rgba[3]);
     }
-    // Only remember when the user finishes interacting with the picker,
-    // otherwise a single HSL-wheel drag would push ten intermediate
-    // colours into the recents strip.
-    if color_resp.drag_stopped() {
+    // Remember only when the picker POPUP closes — otherwise every
+    // intermediate slider-drag would push another swatch. We detect close
+    // by watching `Memory::is_popup_open` for the picker's popup id
+    // (conventionally `response.id.with("popup")`).
+    if popup_just_closed(ui, &color_resp) {
         remember_color(recent_colors, rgba);
     }
 
@@ -2027,7 +2046,7 @@ fn paint_picker(
                 color.a = rgba_f[3];
                 changed = true;
             }
-            if picker_resp.drag_stopped() {
+            if popup_just_closed(ui, &picker_resp) {
                 remember_color(recent_colors, rgba_f_to_u8(rgba_f));
             }
             // Inline palette: token swatches (click to bind to that token)
