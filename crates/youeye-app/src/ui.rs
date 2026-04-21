@@ -35,9 +35,23 @@ pub struct UiState {
     token_kinds: BTreeMap<String, ValueKind>,
     /// Same, but for variables.
     variable_kinds: BTreeMap<String, ValueKind>,
+    /// Live edit buffers for the Tokens editor, keyed by the token's
+    /// current name. Holds the in-progress text between frames so typing
+    /// doesn't get clobbered by the re-snapshot, and committing is
+    /// deferred to focus-loss (avoids BTreeMap reorders mid-keystroke
+    /// shuffling rows around under the cursor).
+    token_row_edits: BTreeMap<String, RowEdit>,
+    /// Same, for variables.
+    variable_row_edits: BTreeMap<String, RowEdit>,
     /// Rolling history of recently-used colours, newest first.
     /// De-duplicated; capped at `RECENT_COLOURS_MAX`.
     recent_colors: Vec<[u8; 4]>,
+}
+
+#[derive(Clone, Debug, Default)]
+struct RowEdit {
+    name_buffer: String,
+    value_buffer: String,
 }
 
 const RECENT_COLOURS_MAX: usize = 10;
@@ -411,6 +425,7 @@ impl UiState {
                     "--token-",
                     &mut ds.doc.tokens.0,
                     &mut self.token_kinds,
+                    &mut self.token_row_edits,
                     &mut self.recent_colors,
                 );
                 became_dirty |= draw_dict_editor(
@@ -419,6 +434,7 @@ impl UiState {
                     "--var-",
                     &mut ds.doc.variables.0,
                     &mut self.variable_kinds,
+                    &mut self.variable_row_edits,
                     &mut self.recent_colors,
                 );
                 if became_dirty {
@@ -441,6 +457,7 @@ impl UiState {
                     "--token-",
                     &mut ds.doc.tokens.0,
                     &mut self.token_kinds,
+                    &mut self.token_row_edits,
                     &mut self.recent_colors,
                 );
                 became_dirty |= draw_dict_editor(
@@ -449,6 +466,7 @@ impl UiState {
                     "--var-",
                     &mut ds.doc.variables.0,
                     &mut self.variable_kinds,
+                    &mut self.variable_row_edits,
                     &mut self.recent_colors,
                 );
                 if became_dirty {
@@ -549,6 +567,7 @@ impl UiState {
             "--token-",
             &mut ds.doc.tokens.0,
             &mut self.token_kinds,
+            &mut self.token_row_edits,
             &mut self.recent_colors,
         );
         became_dirty |= draw_dict_editor(
@@ -557,6 +576,7 @@ impl UiState {
             "--var-",
             &mut ds.doc.variables.0,
             &mut self.variable_kinds,
+            &mut self.variable_row_edits,
             &mut self.recent_colors,
         );
         if became_dirty {
@@ -574,6 +594,7 @@ fn draw_dict_editor(
     prefix: &str,
     dict: &mut BTreeMap<String, String>,
     kinds: &mut BTreeMap<String, ValueKind>,
+    row_edits: &mut BTreeMap<String, RowEdit>,
     recent_colors: &mut Vec<[u8; 4]>,
 ) -> bool {
     let mut changed = false;
@@ -598,53 +619,109 @@ fn draw_dict_editor(
             .map(|(n, v)| (n.clone(), v.clone()))
             .collect();
 
+        // Sync row-edit buffers with dict reality for any rows that aren't
+        // currently being typed into. This lets external updates (Add,
+        // Delete, programmatic changes) flow into the visible editor
+        // without stealing focus from rows the user is actively editing.
+        let focused_id = ui.ctx().memory(|m| m.focused());
         for (orig_name, orig_value) in &originals {
-            let mut new_name = orig_name.clone();
-            let mut new_value = orig_value.clone();
+            let name_id = egui::Id::new((prefix, "name", orig_name.as_str()));
+            let value_id = egui::Id::new((prefix, "value", orig_name.as_str()));
+            let name_focused = focused_id == Some(name_id);
+            let value_focused = focused_id == Some(value_id);
+            let entry = row_edits.entry(orig_name.clone()).or_default();
+            if !name_focused {
+                entry.name_buffer = orig_name.clone();
+            }
+            if !value_focused {
+                entry.value_buffer = orig_value.clone();
+            }
+        }
+
+        for (orig_name, orig_value) in &originals {
             let mut delete = false;
             let kind = *kinds
                 .entry(orig_name.clone())
                 .or_insert_with(|| ValueKind::detect(orig_value));
             let mut new_kind = kind;
 
-            ui.horizontal(|ui| {
-                ui.label(prefix);
-                ui.add(egui::TextEdit::singleline(&mut new_name).desired_width(100.0));
-                ui.label(":");
+            let name_id = egui::Id::new((prefix, "name", orig_name.as_str()));
+            let value_id = egui::Id::new((prefix, "value", orig_name.as_str()));
 
-                egui::ComboBox::from_id_salt(format!("{prefix}-kind-{orig_name}"))
-                    .selected_text(new_kind.label())
-                    .width(72.0)
-                    .show_ui(ui, |ui| {
-                        ui.selectable_value(&mut new_kind, ValueKind::Color, "color");
-                        ui.selectable_value(&mut new_kind, ValueKind::Length, "length");
-                        ui.selectable_value(&mut new_kind, ValueKind::Raw, "raw");
-                    });
+            // Pull out the buffers we'll bind the TextEdits to. We hold a
+            // mutable borrow on `row_edits` only during this row's draw.
+            let mut row = row_edits.remove(orig_name).unwrap_or_default();
+            if row.name_buffer.is_empty() && row.value_buffer.is_empty() {
+                row.name_buffer = orig_name.clone();
+                row.value_buffer = orig_value.clone();
+            }
 
-                match new_kind {
-                    ValueKind::Color => {
-                        draw_color_row(
-                            ui,
-                            prefix,
-                            orig_name,
-                            &mut new_value,
-                            &color_picks,
-                            recent_colors,
-                        );
-                    }
-                    ValueKind::Length => {
-                        draw_length_row(ui, prefix, orig_name, &mut new_value, &length_picks);
-                    }
-                    ValueKind::Raw => {
-                        ui.add(egui::TextEdit::singleline(&mut new_value).desired_width(140.0));
-                        draw_value_hint(ui, &new_value);
-                    }
-                }
+            let (name_resp, value_resp_opt) = ui
+                .horizontal(|ui| {
+                    ui.label(prefix);
+                    let name_resp = ui.add(
+                        egui::TextEdit::singleline(&mut row.name_buffer)
+                            .id(name_id)
+                            .desired_width(100.0),
+                    );
+                    ui.label(":");
 
-                if ui.small_button("×").on_hover_text("Delete").clicked() {
-                    delete = true;
-                }
-            });
+                    egui::ComboBox::from_id_salt(format!("{prefix}-kind-{orig_name}"))
+                        .selected_text(new_kind.label())
+                        .width(72.0)
+                        .show_ui(ui, |ui| {
+                            ui.selectable_value(&mut new_kind, ValueKind::Color, "color");
+                            ui.selectable_value(&mut new_kind, ValueKind::Length, "length");
+                            ui.selectable_value(&mut new_kind, ValueKind::Raw, "raw");
+                        });
+
+                    let mut value_resp: Option<egui::Response> = None;
+                    match new_kind {
+                        ValueKind::Color => {
+                            draw_color_row(
+                                ui,
+                                prefix,
+                                orig_name,
+                                &mut row.value_buffer,
+                                &color_picks,
+                                recent_colors,
+                            );
+                        }
+                        ValueKind::Length => {
+                            draw_length_row(
+                                ui,
+                                prefix,
+                                orig_name,
+                                &mut row.value_buffer,
+                                &length_picks,
+                            );
+                        }
+                        ValueKind::Raw => {
+                            value_resp = Some(
+                                ui.add(
+                                    egui::TextEdit::singleline(&mut row.value_buffer)
+                                        .id(value_id)
+                                        .desired_width(140.0),
+                                ),
+                            );
+                            draw_value_hint(ui, &row.value_buffer);
+                        }
+                    }
+
+                    if ui.small_button("×").on_hover_text("Delete").clicked() {
+                        delete = true;
+                    }
+                    (name_resp, value_resp)
+                })
+                .inner;
+
+            // Commit on focus-loss, so the BTreeMap doesn't re-sort while
+            // the user is still typing (which would shuffle rows under the
+            // cursor).
+            let name_committed = name_resp.lost_focus() && row.name_buffer != *orig_name;
+            let value_committed = value_resp_opt
+                .as_ref()
+                .is_some_and(|r| r.lost_focus() && row.value_buffer != *orig_value);
 
             if new_kind != kind {
                 kinds.insert(orig_name.clone(), new_kind);
@@ -652,18 +729,20 @@ fn draw_dict_editor(
             }
             if delete {
                 edits.push(DictEdit::Delete(orig_name.clone()));
-            } else if new_name != *orig_name {
+            } else if name_committed {
                 edits.push(DictEdit::Rename {
                     from: orig_name.clone(),
-                    to: new_name,
-                    value: new_value,
+                    to: row.name_buffer.trim().to_string(),
+                    value: row.value_buffer.clone(),
                 });
-            } else if new_value != *orig_value {
+            } else if value_committed {
                 edits.push(DictEdit::UpdateValue {
                     name: orig_name.clone(),
-                    value: new_value,
+                    value: row.value_buffer.clone(),
                 });
             }
+
+            row_edits.insert(orig_name.clone(), row);
         }
 
         if ui.button("Add").clicked() {
@@ -701,6 +780,11 @@ fn draw_dict_editor(
                 }
             }
         }
+
+        // Prune row-edit buffers that don't correspond to any current dict
+        // key — keeps the map from leaking entries when rows are deleted
+        // or renamed.
+        row_edits.retain(|k, _| dict.contains_key(k));
     });
     changed
 }
@@ -1223,8 +1307,14 @@ fn draw_color_row(
         display_color.b(),
         display_color.a(),
     ];
-    if ui.color_edit_button_srgba_unmultiplied(&mut rgba).changed() {
+    let color_resp = ui.color_edit_button_srgba_unmultiplied(&mut rgba);
+    if color_resp.changed() {
         *value = format_hex_rgba(rgba[0], rgba[1], rgba[2], rgba[3]);
+    }
+    // Only remember when the user finishes interacting with the picker,
+    // otherwise a single HSL-wheel drag would push ten intermediate
+    // colours into the recents strip.
+    if color_resp.drag_stopped() {
         remember_color(recent_colors, rgba);
     }
 
@@ -1929,16 +2019,16 @@ fn paint_picker(
         Paint::None => {}
         Paint::Solid(color) => {
             let mut rgba_f = [color.r, color.g, color.b, color.a];
-            if ui
-                .color_edit_button_rgba_unmultiplied(&mut rgba_f)
-                .changed()
-            {
+            let picker_resp = ui.color_edit_button_rgba_unmultiplied(&mut rgba_f);
+            if picker_resp.changed() {
                 color.r = rgba_f[0];
                 color.g = rgba_f[1];
                 color.b = rgba_f[2];
                 color.a = rgba_f[3];
-                remember_color(recent_colors, rgba_f_to_u8(rgba_f));
                 changed = true;
+            }
+            if picker_resp.drag_stopped() {
+                remember_color(recent_colors, rgba_f_to_u8(rgba_f));
             }
             // Inline palette: token swatches (click to bind to that token)
             // and recent colours (click to apply raw).

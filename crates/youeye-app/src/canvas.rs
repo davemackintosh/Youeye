@@ -374,12 +374,27 @@ impl Canvas {
                     current,
                 } => {
                     if let Some(doc) = doc.as_deref_mut() {
-                        let bounds = normalize_rect(start, current);
-                        if bounds.w > 0.5 && bounds.h > 0.5 {
-                            let node = create_shape(kind, bounds);
-                            doc.children.push(node);
-                            *selection = vec![vec![doc.children.len() - 1]];
-                            mutated = true;
+                        let world_bounds = normalize_rect(start, current);
+                        if world_bounds.w > 0.5 && world_bounds.h > 0.5 {
+                            let container =
+                                container_path_for(doc, selection.first().map(|p| p.as_slice()));
+                            let origin = container
+                                .as_deref()
+                                .map(|p| container_world_origin(doc, p))
+                                .unwrap_or(Vec2::ZERO);
+                            let local_bounds = ShapeBounds {
+                                x: world_bounds.x - origin.x,
+                                y: world_bounds.y - origin.y,
+                                w: world_bounds.w,
+                                h: world_bounds.h,
+                            };
+                            let node = create_shape(kind, local_bounds);
+                            if let Some(new_path) =
+                                push_into_container(doc, container.as_deref(), node)
+                            {
+                                *selection = vec![new_path];
+                                mutated = true;
+                            }
                         }
                     }
                 }
@@ -417,6 +432,12 @@ impl Canvas {
                 }
                 Tool::Text => {
                     if let Some(doc) = doc.as_deref_mut() {
+                        let container =
+                            container_path_for(doc, selection.first().map(|p| p.as_slice()));
+                        let origin = container
+                            .as_deref()
+                            .map(|p| container_world_origin(doc, p))
+                            .unwrap_or(Vec2::ZERO);
                         let text = Text {
                             base: NodeBase {
                                 fill: Some(Fill {
@@ -430,15 +451,18 @@ impl Canvas {
                                 }),
                                 ..Default::default()
                             },
-                            x: world.x,
-                            y: world.y,
+                            x: world.x - origin.x,
+                            y: world.y - origin.y,
                             content: "Text".into(),
                             font_family: None,
                             font_size: Some(24.0),
                         };
-                        doc.children.push(Node::Text(text));
-                        *selection = vec![vec![doc.children.len() - 1]];
-                        mutated = true;
+                        if let Some(new_path) =
+                            push_into_container(doc, container.as_deref(), Node::Text(text))
+                        {
+                            *selection = vec![new_path];
+                            mutated = true;
+                        }
                     }
                 }
                 _ => {}
@@ -703,7 +727,14 @@ fn normalize_rect(a: Vec2, b: Vec2) -> ShapeBounds {
 
 fn hit_test(doc: &Document, world: Vec2) -> Option<Vec<usize>> {
     let mut result = None;
-    hit_test_impl(&doc.children, world, &mut Vec::new(), &mut result);
+    hit_test_impl(
+        &doc.children,
+        world,
+        &mut Vec::new(),
+        &mut result,
+        doc,
+        None,
+    );
     result
 }
 
@@ -712,19 +743,30 @@ fn hit_test_impl(
     local: Vec2,
     path: &mut Vec<usize>,
     result: &mut Option<Vec<usize>>,
+    doc: &Document,
+    flex_positions: Option<&[Option<youeye_render::layout::ChildLayout>]>,
 ) {
     for (i, child) in children.iter().enumerate() {
         path.push(i);
+        // If the parent is a flex frame, this child renders at a shifted
+        // position; undo the shift on the test point so we can compare
+        // against the child's authored geometry.
+        let shift = flex_positions
+            .and_then(|pos| pos.get(i).and_then(|p| p.as_ref()))
+            .map(|placed| placed.top_left - youeye_render::layout::authored_top_left(child))
+            .unwrap_or(Vec2::ZERO);
+        let test = local - shift;
+
         match child {
             Node::Rect(r) => {
-                if inside_rect(local, r.x, r.y, r.width, r.height) {
+                if inside_rect(test, r.x, r.y, r.width, r.height) {
                     *result = Some(path.clone());
                 }
             }
             Node::Ellipse(e) => {
                 if e.rx > 0.0 && e.ry > 0.0 {
-                    let dx = (local.x - e.cx) / e.rx;
-                    let dy = (local.y - e.cy) / e.ry;
+                    let dx = (test.x - e.cx) / e.rx;
+                    let dy = (test.y - e.cy) / e.ry;
                     if dx * dx + dy * dy <= 1.0 {
                         *result = Some(path.clone());
                     }
@@ -732,25 +774,33 @@ fn hit_test_impl(
             }
             Node::Path(p) => {
                 let b = p.data.bounding_box();
-                if inside_rect(local, b.x0, b.y0, b.width(), b.height()) {
+                if inside_rect(test, b.x0, b.y0, b.width(), b.height()) {
                     *result = Some(path.clone());
                 }
             }
             Node::Text(t) => {
                 let (bx, by, bw, bh) = text_bbox(t);
-                if inside_rect(local, bx, by, bw, bh) {
+                if inside_rect(test, bx, by, bw, bh) {
                     *result = Some(path.clone());
                 }
             }
             Node::Frame(f) => {
-                if inside_rect(local, f.x, f.y, f.width, f.height) {
+                if inside_rect(test, f.x, f.y, f.width, f.height) {
                     *result = Some(path.clone());
                 }
-                let frame_local = local - Vec2::new(f.x, f.y);
-                hit_test_impl(&f.children, frame_local, path, result);
+                let frame_local = test - Vec2::new(f.x, f.y);
+                let child_positions = youeye_render::layout::compute_flex_positions(f, doc);
+                hit_test_impl(
+                    &f.children,
+                    frame_local,
+                    path,
+                    result,
+                    doc,
+                    child_positions.as_deref(),
+                );
             }
             Node::Group(g) => {
-                hit_test_impl(&g.children, local, path, result);
+                hit_test_impl(&g.children, test, path, result, doc, None);
             }
             _ => {}
         }
@@ -1174,10 +1224,17 @@ fn marquee_hits(doc: &Document, rect: ShapeBounds) -> Vec<Vec<usize>> {
         path: &mut Vec<usize>,
         rect: ShapeBounds,
         out: &mut Vec<Vec<usize>>,
+        doc: &Document,
+        flex_positions: Option<&[Option<youeye_render::layout::ChildLayout>]>,
     ) {
         for (i, child) in children.iter().enumerate() {
             path.push(i);
-            let bounds = local_bounds(child, origin);
+            let shift = flex_positions
+                .and_then(|pos| pos.get(i).and_then(|p| p.as_ref()))
+                .map(|placed| placed.top_left - youeye_render::layout::authored_top_left(child))
+                .unwrap_or(Vec2::ZERO);
+            let child_origin = origin + shift;
+            let bounds = local_bounds(child, child_origin);
             let is_container_only = matches!(child, Node::Group(_));
             if !is_container_only
                 && bounds.w > 0.0
@@ -1188,10 +1245,19 @@ fn marquee_hits(doc: &Document, rect: ShapeBounds) -> Vec<Vec<usize>> {
             }
             match child {
                 Node::Frame(f) => {
-                    walk(&f.children, origin + Vec2::new(f.x, f.y), path, rect, out);
+                    let frame_positions = youeye_render::layout::compute_flex_positions(f, doc);
+                    walk(
+                        &f.children,
+                        child_origin + Vec2::new(f.x, f.y),
+                        path,
+                        rect,
+                        out,
+                        doc,
+                        frame_positions.as_deref(),
+                    );
                 }
                 Node::Group(g) => {
-                    walk(&g.children, origin, path, rect, out);
+                    walk(&g.children, child_origin, path, rect, out, doc, None);
                 }
                 _ => {}
             }
@@ -1199,12 +1265,90 @@ fn marquee_hits(doc: &Document, rect: ShapeBounds) -> Vec<Vec<usize>> {
         }
     }
     let mut out = Vec::new();
-    walk(&doc.children, Vec2::ZERO, &mut Vec::new(), rect, &mut out);
+    walk(
+        &doc.children,
+        Vec2::ZERO,
+        &mut Vec::new(),
+        rect,
+        &mut out,
+        doc,
+        None,
+    );
     out
 }
 
 fn bounds_intersect(a: ShapeBounds, b: ShapeBounds) -> bool {
     !(a.x + a.w < b.x || b.x + b.w < a.x || a.y + a.h < b.y || b.y + b.h < a.y)
+}
+
+/// Walks up from `selection` through the node tree and returns the nearest
+/// containing Frame / Group path, or `None` for "doc root." Used to
+/// decide where a newly-created shape lands.
+fn container_path_for(doc: &Document, selection: Option<&[usize]>) -> Option<Vec<usize>> {
+    let mut path = selection?.to_vec();
+    loop {
+        match doc.node_at(&path) {
+            Some(Node::Frame(_)) | Some(Node::Group(_)) => return Some(path),
+            _ => {
+                if path.pop().is_none() {
+                    return None;
+                }
+            }
+        }
+    }
+}
+
+/// Accumulated world-space origin for the container addressed by `path`,
+/// including any flex shift the container applies to *itself* via an
+/// ancestor. Callers subtract this from world-space drag coords to land
+/// the new shape in the container's local coordinate system.
+fn container_world_origin(doc: &Document, path: &[usize]) -> Vec2 {
+    let mut origin = Vec2::ZERO;
+    let mut children: &[Node] = &doc.children;
+    for (i, idx) in path.iter().enumerate() {
+        let Some(child) = children.get(*idx) else {
+            return origin;
+        };
+        match child {
+            Node::Frame(f) => {
+                origin += Vec2::new(f.x, f.y);
+                if i < path.len() - 1 {
+                    if let Some(positions) = youeye_render::layout::compute_flex_positions(f, doc) {
+                        let next_idx = path[i + 1];
+                        if let Some(Some(placed)) = positions.get(next_idx)
+                            && let Some(nc) = f.children.get(next_idx)
+                        {
+                            let authored = youeye_render::layout::authored_top_left(nc);
+                            origin += placed.top_left - authored;
+                        }
+                    }
+                }
+                children = &f.children;
+            }
+            Node::Group(g) => {
+                children = &g.children;
+            }
+            _ => return origin,
+        }
+    }
+    origin
+}
+
+/// Push `node` into the container at `path` (empty / `None` = doc root)
+/// and return the full path of the newly-inserted node. Returns `None` if
+/// the container doesn't exist or isn't a container.
+fn push_into_container(
+    doc: &mut Document,
+    path: Option<&[usize]>,
+    node: Node,
+) -> Option<Vec<usize>> {
+    let container_path = path.unwrap_or(&[]);
+    let children = doc.container_children_mut(container_path)?;
+    children.push(node);
+    let new_idx = children.len() - 1;
+    let mut full = container_path.to_vec();
+    full.push(new_idx);
+    Some(full)
 }
 
 fn cursor_for_tool(tool: Tool, space_held: bool) -> egui::CursorIcon {
