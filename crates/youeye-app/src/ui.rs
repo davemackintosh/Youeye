@@ -172,7 +172,7 @@ impl UiState {
 
                 // Group selected siblings — ⌘/Ctrl + G.
                 if i.consume_key(egui::Modifiers::COMMAND, egui::Key::G)
-                    && self.selection.len() >= 2
+                    && !self.selection.is_empty()
                     && let Some(ds) = doc_state.as_deref_mut()
                     && let Some(new_path) = group_selection(&mut ds.doc, &self.selection)
                 {
@@ -1039,6 +1039,14 @@ fn draw_layer(
         // with the container's name to accept right-click. Double-click is
         // reserved for egui's built-in collapse toggle, so only the context
         // menu triggers rename here.
+        // Click the container header to also select it — so `+Rect`
+        // (and other add-layer buttons) route inserts into this container.
+        // egui's CollapsingHeader still owns the click for toggle-open;
+        // selection piggybacks. Double-click / right-click stay on the
+        // existing rename + context menu paths.
+        if collapse.header_response.clicked() {
+            toggle(selection, path.clone());
+        }
         collapse.header_response.context_menu(|ui| {
             if ui.button("Rename").clicked() {
                 actions.push(LayerAction::StartRename {
@@ -1437,7 +1445,7 @@ fn delete_paths(doc: &mut youeye_doc::Document, paths: &[Vec<usize>]) -> bool {
 /// new Group and writes it into the doc. Non-sibling selections are a
 /// no-op and return `None`.
 fn group_selection(doc: &mut youeye_doc::Document, selection: &[Vec<usize>]) -> Option<Vec<usize>> {
-    if selection.len() < 2 {
+    if selection.is_empty() {
         return None;
     }
     let (last0, parent_path) = selection[0].split_last()?;

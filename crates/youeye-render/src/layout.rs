@@ -7,14 +7,16 @@
 //!
 //! Per-child flex overrides (`flex-grow`, `align-self`) are not wired up yet
 //! — only frame-level direction / justify / align / gap / padding. Gap and
-//! padding that reference `var(--...)` / `calc(...)` resolve to `0` for now;
-//! the token resolver for layout lands alongside the inspector in slice C.
+//! padding values can be literal numbers or `var(--token-*)` / `var(--var-*)`
+//! references that resolve against the document's token + variable tables
+//! (up to [`MAX_VAR_DEPTH`] levels). `calc(...)` is still unsupported —
+//! that's issue #16.
 
 use std::collections::BTreeMap;
 
 use kurbo::{Shape, Vec2};
 use taffy::prelude::*;
-use youeye_doc::{Frame, Node};
+use youeye_doc::{Document, Frame, Node};
 
 /// Computed placement for one flex child, relative to the frame's origin.
 #[derive(Debug, Clone, Copy)]
@@ -26,7 +28,7 @@ pub struct ChildLayout {
 /// order when `frame` carries `youeye:layout="flex"`. Rulers get `None`
 /// because they're layout metadata, not flex participants. Returns `None`
 /// overall when the frame is not auto-laid-out.
-pub fn compute_flex_positions(frame: &Frame) -> Option<Vec<Option<ChildLayout>>> {
+pub fn compute_flex_positions(frame: &Frame, doc: &Document) -> Option<Vec<Option<ChildLayout>>> {
     if frame.base.youeye_attrs.get("layout").map(String::as_str) != Some("flex") {
         return None;
     }
@@ -34,8 +36,8 @@ pub fn compute_flex_positions(frame: &Frame) -> Option<Vec<Option<ChildLayout>>>
     let mut taffy: TaffyTree<()> = TaffyTree::new();
 
     let attrs = &frame.base.youeye_attrs;
-    let gap_val = parse_length(attrs, "gap");
-    let padding_val = parse_length(attrs, "padding");
+    let gap_val = parse_length(attrs, "gap", doc);
+    let padding_val = parse_length(attrs, "padding", doc);
 
     let root_style = Style {
         display: Display::Flex,
@@ -168,19 +170,53 @@ fn align_items(attrs: &BTreeMap<String, String>) -> AlignItems {
     }
 }
 
-fn parse_length(attrs: &BTreeMap<String, String>, key: &str) -> f32 {
+fn parse_length(attrs: &BTreeMap<String, String>, key: &str, doc: &Document) -> f32 {
     let Some(raw) = attrs.get(key) else {
         return 0.0;
     };
-    let trimmed = raw.trim();
-    // `var(...)` / `calc(...)` need the token resolver — defer until slice C.
-    if trimmed.starts_with("var(") || trimmed.starts_with("calc(") {
+    resolve_length(raw, doc, 0)
+}
+
+const MAX_VAR_DEPTH: u32 = 8;
+
+/// Resolve a CSS-ish length string: a raw number (with optional unit
+/// suffix that we currently ignore — treating everything as layout
+/// pixels), or a `var(--token-...)` / `var(--var-...)` reference which
+/// we chase through `doc.tokens` / `doc.variables` up to
+/// [`MAX_VAR_DEPTH`] levels. `calc(...)` is still unsupported (returns
+/// 0); interpolation is issue #16.
+fn resolve_length(raw: &str, doc: &Document, depth: u32) -> f32 {
+    if depth > MAX_VAR_DEPTH {
         return 0.0;
     }
-    let end = trimmed
+    let t = raw.trim();
+    if let Some(inner) = t
+        .strip_prefix("var(--token-")
+        .and_then(|r| r.strip_suffix(')'))
+    {
+        return doc
+            .tokens
+            .get(inner)
+            .map(|v| resolve_length(v, doc, depth + 1))
+            .unwrap_or(0.0);
+    }
+    if let Some(inner) = t
+        .strip_prefix("var(--var-")
+        .and_then(|r| r.strip_suffix(')'))
+    {
+        return doc
+            .variables
+            .get(inner)
+            .map(|v| resolve_length(v, doc, depth + 1))
+            .unwrap_or(0.0);
+    }
+    if t.starts_with("calc(") {
+        return 0.0;
+    }
+    let end = t
         .find(|c: char| !(c.is_ascii_digit() || c == '.' || c == '-' || c == '+'))
-        .unwrap_or(trimmed.len());
-    trimmed[..end].parse().unwrap_or(0.0)
+        .unwrap_or(t.len());
+    t[..end].parse().unwrap_or(0.0)
 }
 
 #[cfg(test)]
@@ -225,13 +261,14 @@ mod tests {
             height: 100.0,
             children: vec![rect(10.0, 10.0)],
         };
-        assert!(compute_flex_positions(&frame).is_none());
+        assert!(compute_flex_positions(&frame, &Document::default()).is_none());
     }
 
     #[test]
     fn row_lays_out_children_side_by_side() {
         let frame = flex_frame(300.0, 100.0, &[], vec![rect(50.0, 50.0), rect(50.0, 50.0)]);
-        let positions = compute_flex_positions(&frame).expect("flex positions");
+        let positions =
+            compute_flex_positions(&frame, &Document::default()).expect("flex positions");
         assert_eq!(positions.len(), 2);
         assert_eq!(positions[0].unwrap().top_left, Vec2::new(0.0, 0.0));
         assert_eq!(positions[1].unwrap().top_left, Vec2::new(50.0, 0.0));
@@ -245,7 +282,7 @@ mod tests {
             &[("gap", "10")],
             vec![rect(50.0, 50.0), rect(50.0, 50.0)],
         );
-        let p = compute_flex_positions(&frame).unwrap();
+        let p = compute_flex_positions(&frame, &Document::default()).unwrap();
         assert_eq!(p[0].unwrap().top_left.x, 0.0);
         assert_eq!(p[1].unwrap().top_left.x, 60.0);
     }
@@ -258,7 +295,7 @@ mod tests {
             &[("flex-direction", "column")],
             vec![rect(50.0, 40.0), rect(50.0, 40.0)],
         );
-        let p = compute_flex_positions(&frame).unwrap();
+        let p = compute_flex_positions(&frame, &Document::default()).unwrap();
         assert_eq!(p[0].unwrap().top_left, Vec2::new(0.0, 0.0));
         assert_eq!(p[1].unwrap().top_left, Vec2::new(0.0, 40.0));
     }
@@ -266,7 +303,7 @@ mod tests {
     #[test]
     fn padding_pushes_first_child() {
         let frame = flex_frame(300.0, 100.0, &[("padding", "16")], vec![rect(50.0, 50.0)]);
-        let p = compute_flex_positions(&frame).unwrap();
+        let p = compute_flex_positions(&frame, &Document::default()).unwrap();
         assert_eq!(p[0].unwrap().top_left, Vec2::new(16.0, 16.0));
     }
 
@@ -278,7 +315,7 @@ mod tests {
             &[("justify", "center")],
             vec![rect(50.0, 50.0)],
         );
-        let p = compute_flex_positions(&frame).unwrap();
+        let p = compute_flex_positions(&frame, &Document::default()).unwrap();
         assert_eq!(p[0].unwrap().top_left.x, 75.0);
     }
 
@@ -290,7 +327,7 @@ mod tests {
             &[("justify", "space-between")],
             vec![rect(50.0, 50.0), rect(50.0, 50.0)],
         );
-        let p = compute_flex_positions(&frame).unwrap();
+        let p = compute_flex_positions(&frame, &Document::default()).unwrap();
         assert_eq!(p[0].unwrap().top_left.x, 0.0);
         assert_eq!(p[1].unwrap().top_left.x, 250.0);
     }
@@ -298,7 +335,7 @@ mod tests {
     #[test]
     fn align_center_centers_children_on_cross_axis() {
         let frame = flex_frame(300.0, 100.0, &[("align", "center")], vec![rect(50.0, 40.0)]);
-        let p = compute_flex_positions(&frame).unwrap();
+        let p = compute_flex_positions(&frame, &Document::default()).unwrap();
         assert_eq!(p[0].unwrap().top_left.y, 30.0);
     }
 
@@ -313,7 +350,7 @@ mod tests {
             &[("gap", "var(--var-rhythm)")],
             vec![rect(50.0, 50.0), rect(50.0, 50.0)],
         );
-        let p = compute_flex_positions(&frame).unwrap();
+        let p = compute_flex_positions(&frame, &Document::default()).unwrap();
         assert_eq!(p[1].unwrap().top_left.x, 50.0);
     }
 }

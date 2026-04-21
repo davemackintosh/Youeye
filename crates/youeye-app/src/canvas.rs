@@ -766,15 +766,29 @@ fn inside_rect(p: Vec2, x: f64, y: f64, w: f64, h: f64) -> bool {
 
 fn world_bounds_of(doc: &Document, path: &[usize]) -> Option<ShapeBounds> {
     let mut origin = Vec2::ZERO;
-    let mut children = &doc.children;
+    let mut children: &[Node] = &doc.children;
     for (i, idx) in path.iter().enumerate() {
         let child = children.get(*idx)?;
-        if i == path.len() - 1 {
+        let is_last = i == path.len() - 1;
+        if is_last {
             return Some(local_bounds(child, origin));
         }
         match child {
             Node::Frame(f) => {
-                origin += Vec2::new(f.x, f.y);
+                let mut next_origin = origin + Vec2::new(f.x, f.y);
+                // When the frame is auto-laid-out, the next child on our
+                // path has been shifted by taffy; reflect that in the
+                // origin we hand to `local_bounds` at the leaf.
+                if let Some(positions) = youeye_render::layout::compute_flex_positions(f, doc) {
+                    let next_idx = path[i + 1];
+                    if let Some(Some(placed)) = positions.get(next_idx)
+                        && let Some(next_child) = f.children.get(next_idx)
+                    {
+                        let authored = youeye_render::layout::authored_top_left(next_child);
+                        next_origin += placed.top_left - authored;
+                    }
+                }
+                origin = next_origin;
                 children = &f.children;
             }
             Node::Group(g) => {
@@ -945,17 +959,28 @@ fn translate_node(node: &mut Node, d: Vec2) {
 
 fn set_bounds(doc: &mut Document, path: &[usize], b: ShapeBounds) -> bool {
     // Translate the world-space bounds back into the node's local space by
-    // walking the path again to accumulate the parent origin.
+    // walking the path again to accumulate the parent origin, including
+    // any flex-layout shift the parent applies to this child.
     let mut origin = Vec2::ZERO;
     {
         let mut children: &[Node] = &doc.children;
-        for idx in &path[..path.len().saturating_sub(1)] {
+        let last = path.len().saturating_sub(1);
+        for (i, idx) in path[..last].iter().enumerate() {
             let Some(child) = children.get(*idx) else {
                 return false;
             };
             match child {
                 Node::Frame(f) => {
                     origin += Vec2::new(f.x, f.y);
+                    if let Some(positions) = youeye_render::layout::compute_flex_positions(f, doc) {
+                        let next_idx = path[i + 1];
+                        if let Some(Some(placed)) = positions.get(next_idx)
+                            && let Some(next_child) = f.children.get(next_idx)
+                        {
+                            let authored = youeye_render::layout::authored_top_left(next_child);
+                            origin += placed.top_left - authored;
+                        }
+                    }
                     children = &f.children;
                 }
                 Node::Group(g) => {

@@ -107,7 +107,7 @@ fn render_node(
             let bounds = KRect::new(0.0, 0.0, f.width, f.height);
             let child_scope =
                 constraints::extend_scope(scope, constraints::collect_rulers(&f.children));
-            match layout::compute_flex_positions(f) {
+            match layout::compute_flex_positions(f, doc) {
                 Some(positions) => {
                     for (child, placed) in f.children.iter().zip(positions.iter()) {
                         match (child, placed) {
